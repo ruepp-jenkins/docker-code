@@ -96,9 +96,18 @@ belastbare Test ist der Aufruf mit echten `tools`, siehe
 ### Kontextfenster
 
 Der zweite stille Grund für einen Agent, der Unsinn tut: Ein Agent schickt einen langen
-System-Prompt plus die Schemas aller Werkzeuge — schnell über 10.000 Token. Passt das nicht ins
-Kontextfenster, schneidet Ollama vorne ab, und das Modell erfindet Werkzeugnamen, die es nie gesehen
-hat.
+System-Prompt plus die Schemas aller Werkzeuge — schnell über 10.000 Token, also mehr als das
+4k-Default-Fenster überhaupt fassen kann. Was nicht hineinpasst, fällt weg, und das Modell arbeitet
+mit dem, was übrig bleibt. Die typischen Symptome:
+
+- erfundene Werkzeugnamen, die in keinem Schema stehen
+- „none of the provided tools can be used", obwohl Werkzeuge mitgeschickt wurden
+- **Platzhalterpfade wie `/path/to/project/`** statt des echten Arbeitsverzeichnisses — das Modell
+  hat den Umgebungsblock nicht (mehr) gesehen und rät. Den Pfad in der Session noch einmal zu
+  nennen, hilft nicht: Es füllt das Fenster weiter, statt es zu vergrößern.
+
+Der Agent kann das nicht abstellen — über die OpenAI-API gibt es kein `num_ctx`, das Fenster
+bestimmt der Server.
 
 ```bash
 docker exec docker-code-ollama ollama ps      # Spalte CONTEXT, während ein Modell geladen ist
@@ -113,6 +122,49 @@ docker-code models down && docker-code models up
 ```
 
 Mehr Kontext kostet VRAM — wenn danach `ollama ps` eine CPU/GPU-Aufteilung zeigt, war es zu viel.
+
+### Wie groß, und was es kostet
+
+Zwei Grenzen, und die niedrigere gewinnt.
+
+**Das Modell.** Mehr als sein natives Fenster nimmt es nicht an: `qwen3:8b` und `qwen3:14b` können
+40.960, `qwen3-coder:30b` kann 262.144. Bei den dichten Qwen3-Modellen ist 32768 also schon fast das
+Maximum — dort lohnt die Frage nach mehr gar nicht.
+
+**Das VRAM.** Der KV-Cache wächst linear mit dem Fenster und wird schnell größer als das Modell
+selbst:
+
+```
+KV-Cache = 2 × Layer × KV-Heads × head_dim × 2 Byte × Kontext
+```
+
+| Modell | pro 1000 Token | 32k | 64k |
+|---|---|---|---|
+| `qwen3:14b` (40 Layer, 8 KV-Heads) | ~160 MB | ~5,0 GB | über dem Modelllimit |
+| `qwen3-coder:30b` (48 Layer, 4 KV-Heads) | ~96 MB | ~3,0 GB | ~6,0 GB |
+
+Was tatsächlich belegt wird, sagt Ollama beim Laden:
+
+```bash
+docker logs docker-code-ollama 2>&1 | grep -E "KV buffer size|n_ctx_train"
+#   llama_kv_cache: ROCm0 KV buffer size = 3072.00 MiB
+#   print_info: n_ctx_train = 262144
+```
+
+Statt das Fenster zu vergrößern, lohnt sich meist der billigere Hebel — ein quantisierter KV-Cache
+halbiert (`q8_0`) oder viertelt (`q4_0`) den Verbrauch:
+
+```bash
+export DOCKER_CODE_OLLAMA_ENV="OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_NUM_PARALLEL=1"
+```
+
+`OLLAMA_NUM_PARALLEL=1`, damit Ollama das Fenster nicht auf mehrere Slots vervielfacht. Und die
+Quantisierung braucht Flash Attention, das auf AMD nicht jede Karte kann: Halbiert sich die
+`KV buffer size` im Log nicht, hat sie nicht gegriffen.
+
+Größer ist dabei nicht automatisch besser — die Trefferquote langer Kontexte fällt in der Mitte ab,
+und jede Runde muss das Fenster erst verarbeiten. Ein Agent, der gezielt Dateien öffnet, arbeitet mit
+32–64k besser als einer, der 200k füllt.
 
 ---
 
