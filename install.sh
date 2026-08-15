@@ -172,6 +172,12 @@ for dir in bin lib agents image base scripts; do
     [ -d "${SOURCE}/${dir}" ] || continue
     cp -R "${SOURCE}/${dir}" "${PREFIX}/"
 done
+
+# The installer travels with the installation, so `docker-code self-update` has something to run
+# without going back to the network first — and so a --local install can be refreshed from its
+# checkout while offline.
+cp "${SOURCE}/install.sh" "${PREFIX}/install.sh"
+chmod 0755 "${PREFIX}/install.sh"
 for doc in README.md AGENTS.md LOCAL-MODELS.md REGISTRY.md; do
     if [ -f "${SOURCE}/${doc}" ]; then
         cp "${SOURCE}/${doc}" "${PREFIX}/"
@@ -181,6 +187,23 @@ done
 chmod 0755 "${PREFIX}/bin/docker-code"
 chmod 0755 "${PREFIX}"/image/*.sh 2>/dev/null || true
 chmod 0755 "${PREFIX}"/scripts/*.sh 2>/dev/null || true
+
+# Where this installation came from, so it can be refreshed the same way it was made. Without this,
+# `self-update` would have to guess — and would silently pull from GitHub over an installation
+# somebody made from a checkout they are working in.
+{
+    echo "# written by install.sh; read by 'docker-code self-update'"
+    if [ "${MODE}" = "local" ]; then
+        echo "mode=local"
+        echo "source=${SOURCE}"
+    else
+        echo "mode=remote"
+        echo "repo=${REPO}"
+        echo "ref=${REF}"
+    fi
+    echo "install_dir=${INSTALL_DIR}"
+    echo "prefix=${PREFIX}"
+} >"${PREFIX}/.install-source"
 
 # The wrappers in the checkout are symlinks to bin/docker-code; the installed ones point at the
 # installed copy, so the commands keep working if the checkout moves or goes away.

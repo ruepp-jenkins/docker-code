@@ -188,18 +188,43 @@ docker-code help       # alle Kommandos
 
 ## Updates
 
-Die Tools sind systemweit im Image installiert, mit abgeschaltetem Auto-Updater. Ein neues Image ist
-damit der einzige Update-Weg — und es fasst dein `~/docker-code` nicht an: kein neuer Login, keine
-verlorenen Sessions.
+Zwei getrennte Dinge, und deshalb zwei Befehle: die **Images** (ein Tool hat eine neue Version) und
+**docker-code selbst** (ein Agent kommt dazu, ein Wrapper ändert sich).
 
 ```bash
-docker-code update            # alle Images ziehen
-docker-code update claude     # nur einen
-docker-code build claude      # oder selbst bauen
+docker-code update            # die Images ziehen — alle
+docker-code update claude     # oder nur einen
+docker-code build claude      # oder selbst bauen statt ziehen
+
+docker-code self-update       # docker-code, die Agent-Definitionen und die Wrapper
 ```
 
-Die CI baut neu, wenn eines der Tools eine neue Version veröffentlicht oder das Ubuntu-Basis-Image
-sich bewegt.
+`self-update` weiß, woher deine Installation stammt: `install.sh` hinterlegt das beim Installieren in
+`.install-source`. Eine Installation aus dem Netz holt sich denselben Branch wieder, eine mit
+`--local` gebaute aktualisiert aus genau dem Checkout — kein stilles Umschalten auf GitHub. Einen
+anderen Stand ziehen:
+
+```bash
+docker-code self-update --ref v2
+```
+
+Neue Agents bringen einen neuen Wrapper mit; `self-update` legt den Symlink an und nennt die Zahl der
+verlinkten Befehle. Danach fehlt nur noch das Image: `docker-code update <agent>` oder
+`docker-code build <agent>`.
+
+Arbeitest du direkt im Checkout — die Wrapper zeigen dann dorthin —, ist `git pull` das Update, und
+`self-update` sagt dir das, statt so zu tun als hätte es etwas getan.
+
+Die Tools selbst sind systemweit im Image installiert, mit abgeschaltetem Auto-Updater. Ein neues
+Image ist damit der einzige Weg, auf dem eine neue Tool-Version bei dir ankommt — und es fasst dein
+`~/docker-code` nicht an: kein neuer Login, keine verlorenen Sessions. Die CI baut neu, wenn eines
+der Tools eine neue Version veröffentlicht oder das Ubuntu-Basis-Image sich bewegt.
+
+Deinstallieren, ohne den Zustand zu verlieren:
+
+```bash
+install.sh --uninstall        # entfernt Befehle und Installation, ~/docker-code bleibt
+```
 
 ---
 

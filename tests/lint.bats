@@ -133,6 +133,39 @@ EOF
     grep -q 'DOCKER_CODE_HOME' "${REPO_ROOT}/install.sh"
 }
 
+@test "an installation carries the installer and a record of where it came from" {
+    # Without both, `docker-code self-update` has nothing to run and nothing to run it against —
+    # and would have to guess, which for a --local install means silently pulling from GitHub over
+    # a copy somebody made from the checkout they are working in.
+    grep -q 'cp "${SOURCE}/install.sh" "${PREFIX}/install.sh"' "${REPO_ROOT}/install.sh"
+    grep -q '\.install-source' "${REPO_ROOT}/install.sh"
+    grep -q '\.install-source' "${REPO_ROOT}/bin/docker-code"
+}
+
+@test "self-update replaces this process before the installer deletes it" {
+    # The installer's first act is to remove the prefix, which holds the running script. Bash reads
+    # a script incrementally, so a copy plus exec is what keeps that from truncating mid-command.
+    block="$(sed -n '/^cmd_self_update/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [[ "${block}" == *"mktemp"* ]]
+    [[ "${block}" == *"exec bash"* ]]
+}
+
+@test "self-update from a checkout explains itself instead of pretending to work" {
+    run "${REPO_ROOT}/bin/docker-code" self-update
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"checkout, not an installation"* ]]
+    [[ "${output}" == *"git -C ${REPO_ROOT} pull"* ]]
+}
+
+@test "the two update commands are distinguishable from the help alone" {
+    run "${REPO_ROOT}/bin/docker-code" help
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"update"* ]]
+    [[ "${output}" == *"self-update"* ]]
+    # `update` must say it means images, or it reads as the one that updates the command.
+    printf '%s\n' "${output}" | grep -E '^\s+docker-code update' | grep -qi 'image'
+}
+
 @test "the installer derives wrapper names from the tree, not from a list of its own" {
     grep -q 'AGENT_WRAPPER' "${REPO_ROOT}/install.sh"
     for id in $(all_agent_ids); do

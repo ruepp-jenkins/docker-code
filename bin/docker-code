@@ -44,7 +44,10 @@ resolve_self() {
 }
 
 SELF_PATH="$(resolve_self "$0")"
-DOCKER_CODE_ROOT="${DOCKER_CODE_ROOT:-$(dirname "$(dirname "${SELF_PATH}")")}"
+# Absolute, not whatever `./bin/docker-code` was typed as: the root ends up in error messages, in
+# the paths handed to `docker run`, and in the source recorded by an installation — all of which
+# have to keep meaning the same thing from a different working directory.
+DOCKER_CODE_ROOT="${DOCKER_CODE_ROOT:-$(cd -P "$(dirname "$(dirname "${SELF_PATH}")")" && pwd)}"
 export DOCKER_CODE_ROOT
 
 for lib in agents mirror models; do
@@ -858,6 +861,87 @@ cmd_build() {
     "${DOCKER_CODE_ROOT}/scripts/build.sh" "$@"
 }
 
+# ---------------------------------------------------------------------------------------------
+# Updating the command itself
+#
+# `update` pulls images; this replaces docker-code, the agent definitions and the wrappers. Two
+# separate things, deliberately two separate commands — a new image of an old tool is a different
+# event from a new tool appearing under agents/.
+#
+# The installation records where it came from, so a copy made from a checkout is refreshed from that
+# checkout rather than silently from GitHub.
+# ---------------------------------------------------------------------------------------------
+cmd_self_update() {
+    local record="${DOCKER_CODE_ROOT}/.install-source"
+    local installer="${DOCKER_CODE_ROOT}/install.sh"
+
+    if [ ! -f "${record}" ]; then
+        cat >&2 <<EOF
+${SELF_NAME}: this is a checkout, not an installation — nothing to self-update.
+
+  ${DOCKER_CODE_ROOT}
+
+The wrappers you are running point straight at it, so updating means updating the checkout:
+
+    git -C ${DOCKER_CODE_ROOT} pull
+    ${DOCKER_CODE_ROOT}/scripts/build.sh     # if the images need rebuilding
+
+To install a copy that self-update can manage:
+
+    ${DOCKER_CODE_ROOT}/install.sh --local ${DOCKER_CODE_ROOT}
+EOF
+        exit 1
+    fi
+
+    [ -f "${installer}" ] ||
+        die "${installer} is missing; reinstall with the curl one-liner from README.md"
+
+    local mode source repo ref install_dir prefix
+    mode="$(sed -n 's/^mode=//p' "${record}" | head -n 1)"
+    source="$(sed -n 's/^source=//p' "${record}" | head -n 1)"
+    repo="$(sed -n 's/^repo=//p' "${record}" | head -n 1)"
+    ref="$(sed -n 's/^ref=//p' "${record}" | head -n 1)"
+    install_dir="$(sed -n 's/^install_dir=//p' "${record}" | head -n 1)"
+    prefix="$(sed -n 's/^prefix=//p' "${record}" | head -n 1)"
+
+    local args
+    args=(--dir "${install_dir}" --prefix "${prefix}")
+
+    case "${mode}" in
+        local)
+            [ -d "${source}" ] ||
+                die "this installation came from ${source}, which no longer exists." \
+                    "Reinstall from wherever the checkout is now: ${installer} --local <dir>"
+            echo "updating from ${source}"
+            args+=(--local "${source}")
+            ;;
+        remote)
+            echo "updating from ${repo}@${ref}"
+            export DOCKER_CODE_REPO="${repo}"
+            args+=(--ref "${ref}")
+            ;;
+        *)
+            die "${record} does not say where this installation came from"
+            ;;
+    esac
+
+    # Anything else the caller typed, e.g. `docker-code self-update --ref v2`.
+    [ "$#" -eq 0 ] || args+=("$@")
+
+    # Run a copy, and exec it.
+    #
+    # The installer's first act is to delete the prefix — which holds this very script. Bash reads a
+    # script incrementally, so having the file removed underneath a running shell is a real way to
+    # get a truncated command. exec replaces this process before any of that happens, and the copy
+    # lives outside the directory being replaced.
+    local tmp
+    tmp="$(mktemp "${TMPDIR:-/tmp}/docker-code-install.XXXXXX")" || die "cannot create a temp file"
+    cat "${installer}" >"${tmp}"
+    chmod 0755 "${tmp}"
+
+    exec bash "${tmp}" "${args[@]}"
+}
+
 cmd_update() {
     require_docker
     local ids="$*"
@@ -868,6 +952,8 @@ cmd_update() {
         echo "==> $(agent_image)"
         docker pull "$(agent_image)" || warn "could not pull $(agent_image)"
     done
+    echo
+    echo "That was the images. To update docker-code itself: docker-code self-update"
 }
 
 cmd_help() {
@@ -880,6 +966,7 @@ Usage:
   docker-code list                the agents this installation knows
   docker-code build [agent...]    build images locally (default: base + all agents)
   docker-code update [agent...]   pull the published images
+  docker-code self-update         update docker-code itself, the agents and the wrappers
   docker-code models <cmd>        up | down | status | pull <m> | list | rm <m> | run <m> | logs
   docker-code registry <cmd>      start | stop | status  (Docker Hub pull-through cache)
   docker-code doctor              what is installed, valid and present
@@ -932,6 +1019,7 @@ case "${1:-help}" in
     list|ls)   cmd_list ;;
     build)     shift; cmd_build "$@" ;;
     update)    shift; cmd_update "$@" ;;
+    self-update|selfupdate) shift; cmd_self_update "$@" ;;
     models)    shift; cmd_models "$@" ;;
     registry)  shift; cmd_registry "$@" ;;
     doctor)    cmd_doctor ;;
