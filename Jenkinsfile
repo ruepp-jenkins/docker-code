@@ -188,7 +188,7 @@ pipeline {
                     }
                 }
                 stage('base arm64') {
-                    agent { label 'pi5_docker' }
+                    agent { label 'oracle_docker' }
                     steps {
                         checkoutRepo()
                         buildImage('base', 'arm64', 'linux/arm64')
@@ -255,7 +255,7 @@ pipeline {
                     }
                 }
                 stage('agents arm64') {
-                    agent { label 'pi5_docker' }
+                    agent { label 'oracle_docker' }
                     steps {
                         checkoutRepo()
                         script {
