@@ -93,6 +93,9 @@ FIREWALL="${BATS_TEST_DIRNAME}/../image/init-firewall.sh"
 
 @test "extra domains can be added without editing the image" {
     grep -q 'DOCKER_CODE_ALLOW_DOMAINS' "${FIREWALL}"
-    # The launcher has to actually forward it, or the hook is unreachable.
-    grep -q 'DOCKER_CODE_ALLOW_DOMAINS' "${REPO_ROOT}/bin/docker-code"
+    # The launcher has to know the knob, or the hook is unreachable. That it actually reaches the
+    # container is asserted behaviourally in wrapper.bats, through the dry-run seam — a grep here
+    # would only prove the string exists, and the launcher composes these names rather than
+    # spelling them out.
+    grep -q 'ALLOW_DOMAINS' "${REPO_ROOT}/bin/docker-code"
 }

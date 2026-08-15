@@ -60,6 +60,33 @@ EOF
     done
 }
 
+@test "every knob the README documents really has a per-agent form" {
+    # The README promises DOCKER_CODE_<AGENT>_<KNOB> for every knob in its table. A knob read
+    # straight out of the environment instead of through agent_knob ignores that spelling silently —
+    # which is what DOCKER_CODE_CLAUDE_YOLO=1 did for a while: nothing at all.
+    #
+    # Two are global on purpose: DRY_RUN is the test seam and HOME is the root of the state
+    # directory, shared by every agent by definition.
+    global_only=" DRY_RUN HOME "
+
+    knobs="$(sed -n '/^## Knöpfe/,/^---$/p' "${REPO_ROOT}/README.md" |
+        grep -oE '`[A-Z_]+=' | tr -d '`=' | sort -u)"
+    [ -n "${knobs}" ]
+
+    for knob in ${knobs}; do
+        case "${global_only}" in
+            *" ${knob} "*) continue ;;
+        esac
+        grep -q "agent_knob ${knob} " "${REPO_ROOT}/bin/docker-code" ||
+            grep -q "agent_knob ${knob}\"" "${REPO_ROOT}/bin/docker-code" ||
+            grep -qE "for knob in .*\b${knob}\b" "${REPO_ROOT}/bin/docker-code" || {
+                echo "README documents ${knob}, but bin/docker-code never resolves it with agent_knob"
+                echo "so DOCKER_CODE_<AGENT>_${knob} would be ignored"
+                return 1
+            }
+    done
+}
+
 @test "the files the docs point at exist" {
     for doc in README.md AGENTS.md LOCAL-MODELS.md REGISTRY.md; do
         [ -f "${REPO_ROOT}/${doc}" ] || { echo "${doc} is missing"; return 1; }

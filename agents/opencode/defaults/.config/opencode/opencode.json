@@ -5,7 +5,8 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "docker-code local models",
       "options": {
-        "baseURL": "http://localhost:11434/v1"
+        "baseURL": "http://localhost:11434/v1",
+        "apiKey": "docker-code-local"
       },
       "models": {}
     }

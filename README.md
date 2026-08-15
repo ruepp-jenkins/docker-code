@@ -112,10 +112,29 @@ DOCKER_CODE_SHELL=1 opencode-docker           # nachsehen, was im Container los 
 DOCKER_CODE_DRY_RUN=1 qwen-docker             # nur zeigen, was passieren würde
 ```
 
-Nur für einen Agent, dauerhaft:
+### Dauerhaft, in der `.bashrc`
+
+`DOCKER_CODE_<AGENT>_<KNOPF>` schlägt `DOCKER_CODE_<KNOPF>` schlägt den Standard — und zwar für jeden
+Knopf aus der Tabelle. Damit lässt sich pro Agent entscheiden, was sonst nur pauschal ginge:
 
 ```bash
-export DOCKER_CODE_CLAUDE_YOLO=1              # Claude ja, die anderen nicht
+export PATH="$HOME/.local/bin:$PATH"
+
+export DOCKER_CODE_QWEN_LOCAL=1               # Qwen rechnet lokal …
+export DOCKER_CODE_QWEN_LOCAL_MODEL=qwen2.5-coder:14b
+export DOCKER_CODE_CLAUDE_YOLO=1              # … Claude ohne Rückfragen, aber in der Cloud
+export DOCKER_CODE_NET=restricted             # für alle: Egress nur zu den Domains des Tools
+export DOCKER_CODE_CODEX_NET=full             # außer für Codex
+```
+
+Der vollständige Block für lokale Modelle — samt der Variablen, die hier gerade **nicht** hingehören,
+weil sie auch Sessions ohne lokale Modelle treffen würden — steht in
+[LOCAL-MODELS.md](LOCAL-MODELS.md#dauerhaft-der-bashrc-block).
+
+Prüfen, ohne etwas zu starten:
+
+```bash
+DOCKER_CODE_DRY_RUN=1 qwen-docker
 ```
 
 ---
@@ -133,6 +152,23 @@ Eine explizite Liste, keine Pauschalkopie: ein Gemini-Container hat nichts mit d
 
 Nur gesetzte Variablen werden übergeben — eine ungesetzte bleibt drinnen ungesetzt, statt als leerer
 String einen Container-Default zu überschreiben.
+
+---
+
+## Lokale Modelle in drei Zeilen
+
+```bash
+docker-code models up
+docker-code models pull qwen2.5-coder:14b
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b qwen-docker
+```
+
+Damit ist nichts von Hand einzustellen. Wer trotzdem selbst konfiguriert und nach einem **API-Key**
+gefragt wird: **`docker-code-local`**, für alle Endpunkte. `docker-code models status` zeigt ihn
+zusammen mit den URLs an. Alles Weitere in [LOCAL-MODELS.md](LOCAL-MODELS.md).
+
+Lokale Modelle können: Claude Code, Codex, Qwen, OpenCode und Gemini CLI. Cursor und Copilot rechnen
+serverseitig beim Anbieter und sagen das, wenn man es versucht.
 
 ---
 

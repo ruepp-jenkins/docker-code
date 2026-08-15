@@ -153,6 +153,43 @@ esac'
     [[ "${output}" == *"in use"* ]]
 }
 
+@test "status prints the endpoints and the API key" {
+    # The key is undiscoverable otherwise: a session started with DOCKER_CODE_LOCAL=1 gets it set
+    # automatically, so anyone configuring a tool by hand hits "API key required" with nothing to
+    # type. `models status` is the first place they look.
+    make_stub docker 'echo running'
+    run models_sh 'models_status'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"docker-code-local"* ]]
+    [[ "${output}" == *"localhost:11434/v1"* ]]
+    [[ "${output}" == *"localhost:4000"* ]]
+}
+
+@test "the documented key is the one the code actually uses" {
+    key="$(sed -n 's/^LOCAL_API_KEY="\(.*\)"$/\1/p' "${REPO_ROOT}/lib/models.sh")"
+    [ -n "${key}" ]
+    grep -q "${key}" "${REPO_ROOT}/LOCAL-MODELS.md" || {
+        echo "LOCAL-MODELS.md does not name the API key '${key}'"; return 1
+    }
+    # And every agent that reaches a local model is handed it, rather than being left to guess.
+    for id in $(all_agent_ids); do
+        mode="$(agent_field "${id}" AGENT_LOCAL_MODE)"
+        [ "${mode}" = "none" ] || [ -z "${mode}" ] && continue
+        [[ "$(agent_field "${id}" AGENT_LOCAL_ENV)" == *"${key}"* ]] || {
+            echo "agent ${id} uses local models but its AGENT_LOCAL_ENV never sets the key"
+            return 1
+        }
+    done
+}
+
+@test "the documented example model is the same one throughout" {
+    # A page that names three different models in three examples is a page people copy wrongly.
+    models="$(grep -oE 'qwen2\.5-coder:[0-9.]+b' "${REPO_ROOT}/LOCAL-MODELS.md" | sort -u)"
+    [ "$(printf '%s\n' "${models}" | wc -l)" -le 2 ] || {
+        echo "LOCAL-MODELS.md mixes example models:"; echo "${models}"; return 1
+    }
+}
+
 @test "pulling a model without the services running says how to start them" {
     make_stub docker 'echo ""'
     run models_sh 'models_exec_ollama pull anything'

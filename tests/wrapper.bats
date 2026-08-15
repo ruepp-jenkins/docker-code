@@ -150,6 +150,71 @@ dry() {
     [[ "${output}" == *"example/docker-code-qwen:test"* ]]
 }
 
+@test "every session knob has a working per-agent form" {
+    # This is what makes a shell startup file useful: local models for Qwen, the cloud for the agent
+    # you pay a subscription for. A knob read straight from the environment instead of through
+    # agent_knob would silently ignore the per-agent spelling — which is exactly what the README
+    # promised and the code did not do.
+    export DOCKER_CODE_QWEN_YOLO=1
+    dry qwen-docker
+    [[ "${output}" == *"--env DOCKER_CODE_YOLO=1"* ]]
+
+    dry claude-docker
+    [[ "${output}" == *"--env DOCKER_CODE_YOLO=0"* ]]
+}
+
+@test "a per-agent knob beats the generic one" {
+    export DOCKER_CODE_DIND=0 DOCKER_CODE_CLAUDE_DIND=privileged
+    dry claude-docker
+    [[ "${output}" == *"--privileged"* ]]
+
+    dry qwen-docker
+    [[ "${output}" != *"--privileged"* ]]
+}
+
+@test "local models can be switched on for one agent only" {
+    export DOCKER_CODE_QWEN_LOCAL=1 DOCKER_CODE_QWEN_LOCAL_MODEL=qwen2.5-coder:14b
+    dry qwen-docker
+    [[ "${output}" == *"--network docker-code-net"* ]]
+    [[ "${output}" == *"--env OPENAI_MODEL=qwen2.5-coder:14b"* ]]
+
+    # Claude keeps its cloud provider: no model network, no rewritten base URL.
+    dry claude-docker
+    [[ "${output}" != *"--network docker-code-net"* ]]
+    [[ "${output}" != *"ANTHROPIC_BASE_URL"* ]]
+}
+
+@test "the knobs the container side reads actually reach it" {
+    # init-firewall.sh and user-init.sh read these inside the container; a launcher that never
+    # forwarded them would leave the documented hooks unreachable.
+    export DOCKER_CODE_ALLOW_DOMAINS="registry.intern" \
+           DOCKER_CODE_ALLOW_GITHUB=0 \
+           DOCKER_CODE_DIND_WAIT=30 \
+           DOCKER_CODE_INSECURE_REGISTRIES="registry.intern:5000"
+    dry claude-docker
+    [[ "${output}" == *"--env DOCKER_CODE_ALLOW_DOMAINS=registry.intern"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_ALLOW_GITHUB=0"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_DIND_WAIT=30"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_INSECURE_REGISTRIES=registry.intern:5000"* ]]
+}
+
+@test "per-agent forms of the container-side knobs arrive under the plain name" {
+    # The container runs one agent and has no use for the per-agent spelling.
+    export DOCKER_CODE_QWEN_SHELL=1
+    dry qwen-docker
+    [[ "${output}" == *"--env DOCKER_CODE_SHELL=1"* ]]
+    [[ "${output}" != *"DOCKER_CODE_QWEN_SHELL"* ]]
+}
+
+@test "a per-agent mount applies to that agent only" {
+    export DOCKER_CODE_CODEX_MOUNT="/srv/data:/data:ro"
+    dry codex-docker
+    [[ "${output}" == *"--volume /srv/data:/data:ro"* ]]
+
+    dry qwen-docker
+    [[ "${output}" != *"/srv/data"* ]]
+}
+
 # ---------------------------------------------------------------------------------------------
 # Modes
 # ---------------------------------------------------------------------------------------------

@@ -215,6 +215,25 @@ models_status() {
         echo "on disk:  $(du -sh "$(ollama_store)" 2>/dev/null | cut -f1)"
     fi
     echo "network:  ${MODELS_NETWORK}${MODELS_SUBNET:+ (${MODELS_SUBNET})}"
+
+    # The endpoints and the key, printed rather than only documented.
+    #
+    # A session started with DOCKER_CODE_LOCAL=1 gets all of this set for it, but anyone configuring
+    # a tool by hand needs the key — and the first place they look is this command, not LOCAL-MODELS.md.
+    # It is not a secret: it authenticates a container to a gateway on a private Docker network with
+    # no published port, and it exists only because LiteLLM refuses to answer without one.
+    echo
+    echo "endpoints, for configuring a tool by hand (inside a DOCKER_CODE_LOCAL=1 session):"
+    printf '  %-34s %s\n' "http://localhost:${OLLAMA_PORT}/v1"  "OpenAI-compatible   (codex, qwen, opencode)"
+    printf '  %-34s %s\n' "http://localhost:${OLLAMA_PORT}"     "Anthropic-compatible (claude)"
+    printf '  %-34s %s\n' "http://localhost:${LITELLM_PORT}"    "Gemini-compatible    (gemini)"
+    echo "  API key: ${LOCAL_API_KEY}"
+    if [ -z "${DOCKER_CODE_MODELS_PUBLISH:-}" ]; then
+        echo "  (no host ports; DOCKER_CODE_MODELS_PUBLISH=1 publishes them on 127.0.0.1)"
+    else
+        printf '  from the host: http://127.0.0.1:%s and http://127.0.0.1:%s\n' \
+            "${OLLAMA_PORT}" "${LITELLM_PORT}"
+    fi
 }
 
 models_exec_ollama() {

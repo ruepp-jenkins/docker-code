@@ -150,6 +150,17 @@ agent_knob() {
     fi
 }
 
+# Whether a knob was set at all, at either level. A default and an explicitly chosen value that
+# happens to equal the default are different things: only a stated preference is worth a message when
+# it cannot be honoured.
+agent_knob_is_set() {
+    local name="$1" upper specific generic
+    upper="$(printf '%s' "${AGENT_ID}" | tr 'a-z-' 'A-Z_')"
+    specific="DOCKER_CODE_${upper}_${name}"
+    generic="DOCKER_CODE_${name}"
+    [ -n "${!specific:-}" ] || [ -n "${!generic:-}" ]
+}
+
 IMAGE_NAMESPACE="${DOCKER_CODE_NAMESPACE:-ruepp}"
 IMAGE_PREFIX="${DOCKER_CODE_IMAGE_PREFIX:-docker-code}"
 
@@ -174,23 +185,27 @@ run_session() {
     require_docker
     agent_load "${agent_id}" || exit 1
 
+    # Every session knob goes through agent_knob, so DOCKER_CODE_QWEN_LOCAL=1 means what it looks
+    # like it means: local models for Qwen, and the cloud for the others. That is the setting people
+    # actually want in a shell startup file, where a blanket DOCKER_CODE_LOCAL=1 would also redirect
+    # the agent they pay a subscription for.
     local IMAGE NET_MODE YOLO DIND_MODE
     IMAGE="$(agent_image)"
-    NET_MODE="${DOCKER_CODE_NET:-full}"
-    YOLO="${DOCKER_CODE_YOLO:-0}"
+    NET_MODE="$(agent_knob NET full)"
+    YOLO="$(agent_knob YOLO 0)"
 
     # `privileged` rather than the rootless auto-detection, because it is the mode that works on
     # every host tried so far. Rootless needs unprivileged user namespaces the host may refuse, and a
     # data root the overlay driver can actually use — neither is a given, and both fail as "the
     # daemon is not running" rather than as something a user can act on. The cost is stated plainly
     # in README.md: a privileged container is no longer a boundary against the host.
-    DIND_MODE="${DOCKER_CODE_DIND:-privileged}"
+    DIND_MODE="$(agent_knob DIND privileged)"
 
     # Whether the caller had an opinion, as opposed to taking the default. Only an opinion is worth a
     # message when it cannot be honoured.
     local dind_is_default=1 mirror_is_default=1
-    [ -z "${DOCKER_CODE_DIND:-}" ] || dind_is_default=0
-    [ -z "${DOCKER_CODE_REGISTRY_MIRROR+set}" ] || mirror_is_default=0
+    agent_knob_is_set DIND && dind_is_default=0
+    agent_knob_is_set REGISTRY_MIRROR && mirror_is_default=0
 
     local STORAGE_DIR="${STORAGE_ROOT}/${AGENT_ID}"
 
@@ -279,7 +294,7 @@ run_session() {
 
     # Opt-in, and shared across all agents on purpose: one place for the notes, scripts and scratch
     # files you want every tool to see, without giving any of them the others' credentials.
-    if [ "${DOCKER_CODE_SHARED:-0}" = "1" ]; then
+    if [ "$(agent_knob SHARED 0)" = "1" ]; then
         mkdir -p "${STORAGE_ROOT}/shared" || die "cannot create ${STORAGE_ROOT}/shared"
         run+=(--volume "${STORAGE_ROOT}/shared:/home/agent/shared")
     fi
@@ -313,36 +328,40 @@ run_session() {
     # Opt-in, both of them: an agent that can read the SSH agent socket can use your key, and the
     # git config may name paths that do not exist inside the container. Off by default is the whole
     # point — the container is meant to be unable to act as you.
-    if [ "${DOCKER_CODE_SSH:-0}" = "1" ]; then
+    if [ "$(agent_knob SSH 0)" = "1" ]; then
         [ -n "${SSH_AUTH_SOCK:-}" ] || die "DOCKER_CODE_SSH=1 but no SSH agent is running"
         run+=(--volume "${SSH_AUTH_SOCK}:/ssh-agent" --env "SSH_AUTH_SOCK=/ssh-agent")
     fi
 
     # ${HOME:-}, because a caller who named DOCKER_CODE_HOME explicitly may have no HOME at all, and
     # `set -u` would abort here rather than skip an optional mount.
-    if [ "${DOCKER_CODE_GITCONFIG:-0}" = "1" ] && [ -f "${HOME:-}/.gitconfig" ]; then
+    if [ "$(agent_knob GITCONFIG 0)" = "1" ] && [ -f "${HOME:-}/.gitconfig" ]; then
         run+=(--volume "${HOME}/.gitconfig:/home/agent/.gitconfig:ro")
     fi
 
     # Extra mounts, whitespace-separated: DOCKER_CODE_MOUNT="/data:/data:ro /srv/cache:/cache"
-    if [ -n "${DOCKER_CODE_MOUNT:-}" ]; then
+    local extra_mounts run_args pull_policy
+    extra_mounts="$(agent_knob MOUNT "")"
+    if [ -n "${extra_mounts}" ]; then
         # shellcheck disable=SC2086  # word splitting is the documented interface here
-        for mount in ${DOCKER_CODE_MOUNT}; do
+        for mount in ${extra_mounts}; do
             run+=(--volume "${mount}")
         done
     fi
 
     # Last resort for anything this script does not model.
-    if [ -n "${DOCKER_CODE_RUN_ARGS:-}" ]; then
+    run_args="$(agent_knob RUN_ARGS "")"
+    if [ -n "${run_args}" ]; then
         # A plain global rather than `local extra_args=(...)`: array compound assignment to a local
         # is one of the places where the bash macOS ships still surprises people. Same below.
         # shellcheck disable=SC2206  # word splitting is the documented interface here
-        extra_args=(${DOCKER_CODE_RUN_ARGS})
+        extra_args=(${run_args})
         run+=("${extra_args[@]}")
     fi
 
-    if [ -n "${DOCKER_CODE_PULL:-}" ]; then
-        run+=(--pull "${DOCKER_CODE_PULL}")
+    pull_policy="$(agent_knob PULL "")"
+    if [ -n "${pull_policy}" ]; then
+        run+=(--pull "${pull_policy}")
     fi
 
     run+=("${IMAGE}" "$@")
@@ -514,7 +533,7 @@ session_dind() {
             # turns it off as well. Under the userns restriction above, `apparmor=unconfined` is what
             # breaks rootless Docker — the stock docker-default profile carries the `userns create`
             # permission that allows it. Opt out only for a host whose policy blocks something else.
-            if [ "${DOCKER_CODE_APPARMOR:-}" = "unconfined" ]; then
+            if [ "$(agent_knob APPARMOR "")" = "unconfined" ]; then
                 run+=(--security-opt apparmor=unconfined)
             fi
 
@@ -569,7 +588,7 @@ session_mirror() {
 
     mirror_check_subnet
 
-    case "${DOCKER_CODE_REGISTRY_MIRROR:-0}" in
+    case "$(agent_knob REGISTRY_MIRROR 0)" in
         0|false|"")
             return 0
             ;;
@@ -592,7 +611,7 @@ session_mirror() {
             ;;
         http://*|https://*)
             # Someone else's mirror, already running. We only tell the inner daemon about it.
-            mirror_url="${DOCKER_CODE_REGISTRY_MIRROR}"
+            mirror_url="$(agent_knob REGISTRY_MIRROR 0)"
             ;;
         *)
             die "DOCKER_CODE_REGISTRY_MIRROR must be 1, 0, or the URL of a mirror you run yourself"
@@ -625,7 +644,7 @@ session_mirror() {
 # this function knows only the two wire-format families.
 # ---------------------------------------------------------------------------------------------
 session_local_models() {
-    [ "${DOCKER_CODE_LOCAL:-0}" = "1" ] || return 0
+    [ "$(agent_knob LOCAL 0)" = "1" ] || return 0
 
     if [ "${AGENT_LOCAL_MODE}" = "none" ]; then
         warn "${AGENT_TITLE} cannot use a local model, so DOCKER_CODE_LOCAL is ignored."
@@ -633,7 +652,7 @@ session_local_models() {
         return 0
     fi
 
-    if [ "${DOCKER_CODE_NET:-full}" = "none" ]; then
+    if [ "${NET_MODE}" = "none" ]; then
         warn "DOCKER_CODE_NET=none cuts the container off from the model services; local models off"
         return 0
     fi
@@ -642,7 +661,7 @@ session_local_models() {
     url="$(models_url_for_mode "${AGENT_LOCAL_MODE}")" ||
         die "agents/${AGENT_ID}/agent.env names an AGENT_LOCAL_MODE this launcher does not know"
 
-    model="${DOCKER_CODE_LOCAL_MODEL:-}"
+    model="$(agent_knob LOCAL_MODEL "")"
     if [ -z "${model}" ]; then
         warn "no model named; set DOCKER_CODE_LOCAL_MODEL (see: docker-code models list)"
     fi
@@ -707,8 +726,10 @@ session_passthrough() {
     [ "${#agent_vars[@]}" -eq 0 ] || passthrough_vars+=("${agent_vars[@]}")
 
     # Anything else, by name: DOCKER_CODE_ENV="GH_TOKEN,MY_REGISTRY_URL"
-    if [ -n "${DOCKER_CODE_ENV:-}" ]; then
-        IFS=',' read -r -a extra_vars <<<"${DOCKER_CODE_ENV}"
+    local named_vars
+    named_vars="$(agent_knob ENV "")"
+    if [ -n "${named_vars}" ]; then
+        IFS=',' read -r -a extra_vars <<<"${named_vars}"
         passthrough_vars+=("${extra_vars[@]}")
     fi
 
@@ -722,10 +743,14 @@ session_passthrough() {
         fi
     done
 
-    for var in DOCKER_CODE_ALLOW_DOMAINS DOCKER_CODE_ALLOW_GITHUB DOCKER_CODE_DIND_WAIT \
-        DOCKER_CODE_SHELL DOCKER_CODE_INSECURE_REGISTRIES; do
-        if [ -n "${!var:-}" ]; then
-            run+=(--env "${var}=${!var}")
+    # Knobs the container side reads for itself. Resolved through agent_knob and forwarded under the
+    # plain name, so DOCKER_CODE_QWEN_SHELL=1 arrives inside as DOCKER_CODE_SHELL=1 — the container
+    # only ever runs one agent and has no use for the per-agent spelling.
+    local knob value
+    for knob in ALLOW_DOMAINS ALLOW_GITHUB DIND_WAIT SHELL INSECURE_REGISTRIES; do
+        value="$(agent_knob "${knob}" "")"
+        if [ -n "${value}" ]; then
+            run+=(--env "DOCKER_CODE_${knob}=${value}")
         fi
     done
 }
