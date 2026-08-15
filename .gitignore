@@ -1,0 +1,15 @@
+# Build output
+/test-results/
+/build-metadata-*.json
+/digest-*.txt
+
+# Local Claude Code development state (settings.json, agents/, skills/ and CLAUDE.md are committed)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Editors and platforms
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

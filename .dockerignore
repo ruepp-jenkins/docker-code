@@ -1,0 +1,13 @@
+# The build context is the repository root for every image, so keep it small and predictable.
+.git
+.gitignore
+test-results
+build-metadata-*.json
+digest-*.txt
+
+# The docs are excluded except the ones tests/lint.bats and tests/pipeline.bats read back.
+*.md
+!README.md
+!REGISTRY.md
+!AGENTS.md
+!LOCAL-MODELS.md

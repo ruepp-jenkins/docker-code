@@ -1,0 +1,20 @@
+# Seeded by docker-code on first start. Yours to edit — it is never overwritten.
+#
+# The `dockercode` provider points at the shared Ollama through the container's loopback bridge.
+# It is selected only when you start a session with DOCKER_CODE_LOCAL=1, which adds
+#   --config model_provider=dockercode --model <DOCKER_CODE_LOCAL_MODEL>
+# to the command line. Without that flag Codex uses whatever provider you have configured normally,
+# so this block costs nothing when you are on OpenAI.
+#
+# Deliberately not the built-in `--oss` path: that one assumes localhost:11434 regardless of what
+# base_url says (openai/codex#8240), and an explicit provider is the version that stays predictable.
+
+# wire_api = "responses", not "chat": Codex dropped support for the chat-completions wire format
+# (openai/codex#7782) and refuses to load a config that still names it. Ollama serves /v1/responses,
+# so this works against it directly.
+
+[model_providers.dockercode]
+name = "docker-code local models"
+base_url = "http://localhost:11434/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"

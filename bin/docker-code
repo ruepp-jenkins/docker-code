@@ -1,0 +1,924 @@
+#!/usr/bin/env bash
+# Host-side launcher for every TUI coding agent in this repo, and the CLI that manages them.
+#
+# Invoked under an agent's wrapper name it starts that agent in a container:
+#
+#     claude-docker            gemini-docker            codex-docker
+#     qwen-docker              opencode-docker          copilot-docker
+#     cursor-agent-docker
+#
+# Arguments are passed through untouched; this script only decides how the container around them is
+# built. Invoked as `docker-code` it is the management CLI instead — see `docker-code help`.
+#
+# Configuration is by environment variable, so it composes with the wrapper:
+#   DOCKER_CODE_YOLO=1 gemini-docker            run without permission prompts
+#   DOCKER_CODE_NET=restricted claude-docker    default-deny egress with an allowlist
+#   DOCKER_CODE_LOCAL=1 qwen-docker             use the shared local models
+#
+# Every knob is DOCKER_CODE_*, and a per-agent override is DOCKER_CODE_<AGENT>_* — that discipline
+# is what keeps reset_env in the test suite a two-line function.
+set -euo pipefail
+
+SELF_NAME="$(basename "$0")"
+
+warn() { echo "${SELF_NAME}: $*" >&2; }
+die() { echo "${SELF_NAME}: ERROR: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------------------------
+# Find our own installation
+#
+# The wrappers are symlinks to this file, so $0 is the name the user typed and this is the path.
+# Resolved with a loop rather than `readlink -f`, which the BSD readlink macOS ships does not have.
+# ---------------------------------------------------------------------------------------------
+resolve_self() {
+    local src="$1" dir
+    while [ -L "${src}" ]; do
+        dir="$(cd -P "$(dirname "${src}")" && pwd)"
+        src="$(readlink "${src}")"
+        case "${src}" in
+            /*) ;;
+            *) src="${dir}/${src}" ;;
+        esac
+    done
+    printf '%s\n' "${src}"
+}
+
+SELF_PATH="$(resolve_self "$0")"
+DOCKER_CODE_ROOT="${DOCKER_CODE_ROOT:-$(dirname "$(dirname "${SELF_PATH}")")}"
+export DOCKER_CODE_ROOT
+
+for lib in agents mirror models; do
+    [ -f "${DOCKER_CODE_ROOT}/lib/${lib}.sh" ] ||
+        die "cannot find lib/${lib}.sh under ${DOCKER_CODE_ROOT}; set DOCKER_CODE_ROOT to the checkout"
+    # shellcheck source=/dev/null
+    . "${DOCKER_CODE_ROOT}/lib/${lib}.sh"
+done
+
+# Checked where it is needed rather than at the top: `docker-code help` and `docker-code list` are
+# exactly what someone reads while working out what to install, and `doctor` should report a missing
+# daemon rather than die on it.
+require_docker() {
+    command -v docker >/dev/null || die "docker is not installed or not on PATH"
+}
+
+# ---------------------------------------------------------------------------------------------
+# Persistent state: one directory in your own home, not a Docker volume.
+#
+# ~/docker-code holds everything: one subdirectory per agent — which *is* that agent's home
+# directory inside its container — plus the shared model store and the registry cache. It is yours
+# to read, back up or delete with ordinary tools.
+#
+# Your real home is never mounted into a container. The only host paths a session can see are its
+# own directory here and the project directory you started it in.
+#
+# The trade-off of a bind mount over a named volume is that Docker does not pre-populate it from the
+# image. The container entrypoint seeds what is missing on every start instead.
+#
+# There is deliberately no fallback to a fixed path. Your logins, months of session transcripts and
+# your settings belong in a directory you own, can find without Docker and can back up with tar. If
+# this script cannot work out where your home is, it says so and stops rather than inventing a
+# location.
+# ---------------------------------------------------------------------------------------------
+STATE_DIR_NAME="docker-code"
+
+no_home() {
+    cat >&2 <<EOF
+${SELF_NAME}: ERROR: cannot tell where your home directory is.
+
+HOME is not set, or does not point to an existing directory. Everything these agents keep — logins,
+sessions, settings, plans and the local models they share — belongs in a directory inside your home,
+and this script will not guess one for you.
+
+Name it yourself, then run ${SELF_NAME} again:
+
+    export DOCKER_CODE_HOME="/Users/you/${STATE_DIR_NAME}"    # macOS
+    export DOCKER_CODE_HOME="/home/you/${STATE_DIR_NAME}"     # Linux
+
+To keep it, put that line in your shell's startup file — ~/.zshrc on macOS, ~/.bashrc on most Linux
+systems — and open a new shell.
+EOF
+    exit 1
+}
+
+if [ -n "${DOCKER_CODE_HOME:-}" ]; then
+    STORAGE_ROOT="${DOCKER_CODE_HOME}"
+
+    # A relative value would not be a path to Docker at all: `-v state:/home/agent` creates a named
+    # volume called "state" and the login disappears into Docker's storage instead of your home.
+    case "${STORAGE_ROOT}" in
+        /*) ;;
+        *) die "DOCKER_CODE_HOME must be an absolute path, not '${STORAGE_ROOT}'. A relative value" \
+               "would become the name of a Docker volume, and your logins would end up inside" \
+               "Docker rather than in your home directory." ;;
+    esac
+else
+    case "${HOME:-}" in
+        /*) [ -d "${HOME}" ] || no_home ;;
+        *) no_home ;;
+    esac
+    STORAGE_ROOT="${HOME}/${STATE_DIR_NAME}"
+fi
+
+# A volume name Docker creates on demand; a path has to exist first, and creating it here rather than
+# letting Docker do it as root is what keeps you owning your own state directory.
+prepare_store() {
+    case "$1" in
+        /*) mkdir -p "$1" || die "cannot create the Docker store at $1" ;;
+    esac
+    printf '%s\n' "$1"
+}
+
+# ---------------------------------------------------------------------------------------------
+# Per-agent knobs
+#
+# DOCKER_CODE_<AGENT>_<NAME> beats DOCKER_CODE_<NAME> beats the default, so you can raise a timeout
+# for every agent or pin one image for one of them without the two settings fighting.
+# ---------------------------------------------------------------------------------------------
+agent_knob() {
+    local name="$1" fallback="${2:-}" upper specific generic
+    # shellcheck disable=SC2153  # AGENT_ID comes from agent_load in lib/agents.sh
+    upper="$(printf '%s' "${AGENT_ID}" | tr 'a-z-' 'A-Z_')"
+    specific="DOCKER_CODE_${upper}_${name}"
+    generic="DOCKER_CODE_${name}"
+
+    if [ -n "${!specific:-}" ]; then
+        printf '%s\n' "${!specific}"
+    elif [ -n "${!generic:-}" ]; then
+        printf '%s\n' "${!generic}"
+    else
+        printf '%s\n' "${fallback}"
+    fi
+}
+
+IMAGE_NAMESPACE="${DOCKER_CODE_NAMESPACE:-ruepp}"
+IMAGE_PREFIX="${DOCKER_CODE_IMAGE_PREFIX:-docker-code}"
+
+agent_image() {
+    local override
+    override="$(agent_knob IMAGE "")"
+    if [ -n "${override}" ]; then
+        printf '%s\n' "${override}"
+    else
+        printf '%s/%s-%s:%s\n' "${IMAGE_NAMESPACE}" "${IMAGE_PREFIX}" "${AGENT_ID}" \
+            "${DOCKER_CODE_TAG:-latest}"
+    fi
+}
+
+# ==============================================================================================
+# The session
+# ==============================================================================================
+run_session() {
+    local agent_id="$1"
+    shift
+
+    require_docker
+    agent_load "${agent_id}" || exit 1
+
+    local IMAGE NET_MODE YOLO DIND_MODE
+    IMAGE="$(agent_image)"
+    NET_MODE="${DOCKER_CODE_NET:-full}"
+    YOLO="${DOCKER_CODE_YOLO:-0}"
+
+    # `privileged` rather than the rootless auto-detection, because it is the mode that works on
+    # every host tried so far. Rootless needs unprivileged user namespaces the host may refuse, and a
+    # data root the overlay driver can actually use — neither is a given, and both fail as "the
+    # daemon is not running" rather than as something a user can act on. The cost is stated plainly
+    # in README.md: a privileged container is no longer a boundary against the host.
+    DIND_MODE="${DOCKER_CODE_DIND:-privileged}"
+
+    # Whether the caller had an opinion, as opposed to taking the default. Only an opinion is worth a
+    # message when it cannot be honoured.
+    local dind_is_default=1 mirror_is_default=1
+    [ -z "${DOCKER_CODE_DIND:-}" ] || dind_is_default=0
+    [ -z "${DOCKER_CODE_REGISTRY_MIRROR+set}" ] || mirror_is_default=0
+
+    local STORAGE_DIR="${STORAGE_ROOT}/${AGENT_ID}"
+
+    # ------------------------------------------------------------------------------------------
+    # The workspace, mounted at the same absolute path it has on the host.
+    #
+    # This is the one mount that cannot be simplified to something like /workspace. These tools key
+    # session history, resumed conversations and per-project trust on the absolute working
+    # directory, so a fixed container path would make every project on the host share one history —
+    # and `claude -c` in project A would resume the conversation from project B.
+    #
+    # It is also the only host path besides the agent's own state directory that a container can
+    # see, which is why the guards below are refusals rather than warnings: mounting your whole home
+    # would quietly undo that.
+    # ------------------------------------------------------------------------------------------
+    local workspace="${PWD}"
+    if [ "${workspace}" = "/" ]; then
+        die "refusing to mount / as the workspace; run this from a project directory"
+    fi
+    [ -d "${workspace}" ] || die "the current directory no longer exists"
+
+    if [ -n "${HOME:-}" ] && [ "${workspace}" = "${HOME}" ] &&
+        [ "${DOCKER_CODE_ALLOW_HOME_WORKSPACE:-0}" != "1" ]; then
+        die "refusing to mount your entire home directory as the workspace." \
+            "Start the agent from the project you want it to work on. If you really mean it," \
+            "set DOCKER_CODE_ALLOW_HOME_WORKSPACE=1."
+    fi
+
+    # Not just equality: a workspace *inside* ~/docker-code would hand a session the state of every
+    # other agent, including their credentials.
+    case "${workspace}/" in
+        "${STORAGE_ROOT%/}/"*)
+            die "refusing to run inside ${STORAGE_ROOT}; that directory holds every agent's state" ;;
+    esac
+
+    # Created here rather than by Docker, which would create a missing bind source as root and leave
+    # you with a state directory you cannot read.
+    mkdir -p "${STORAGE_DIR}" || die "cannot create ${STORAGE_DIR}"
+
+    local run
+    run=(docker run --rm --init)
+
+    # Interactive only when there is a terminal on both ends. Without the check,
+    # `claude-docker -p "x" | jq` would get a TTY allocated and jq would receive terminal escapes.
+    if [ -t 0 ] && [ -t 1 ]; then
+        run+=(--tty)
+    fi
+    run+=(--interactive)
+
+    run+=(--hostname "${AGENT_HOSTNAME}")
+    run+=(--label "${MIRROR_LABEL}=session" --label "${MIRROR_LABEL}.agent=${AGENT_ID}")
+
+    # ------------------------------------------------------------------------------------------
+    # A name you can recognize in `docker ps`
+    #
+    # Docker's own "nostalgic_pare" tells you nothing about which session is which. claude-docker_1,
+    # gemini-docker_1, claude-docker_2 does — the prefix is the wrapper you typed, and the number is
+    # the lowest one that agent does not currently have taken.
+    #
+    # A name is a convenience and must never be the reason a session refuses to start, which rules
+    # out a fixed one. Every way of not getting a number ends in an unnamed container instead of an
+    # error — a daemon that cannot be asked, more than a hundred sessions at once, or a name claimed
+    # between the check and the start.
+    # ------------------------------------------------------------------------------------------
+    local NAME_PREFIX="${AGENT_WRAPPER}"
+
+    local session_slot container_name=""
+    session_slot="$(next_free_slot "${NAME_PREFIX}" || true)"
+    if [ -n "${session_slot}" ]; then
+        container_name="${NAME_PREFIX}_${session_slot}"
+        run+=(--name "${container_name}")
+    fi
+
+    # One inner Docker store per concurrent session: two daemons cannot share a data root, because
+    # containerd holds an exclusive lock on its metadata database. The second one waits, times out
+    # and dies, which from inside that session looks like "Docker is simply not running here". Slot 1
+    # keeps the unsuffixed store, so the common single-session case finds the images it built
+    # yesterday rather than an empty cache.
+    local store_suffix=""
+    if [ -n "${session_slot}" ] && [ "${session_slot}" != "1" ]; then
+        store_suffix="_${session_slot}"
+    fi
+
+    run+=(--volume "${workspace}:${workspace}" --workdir "${workspace}")
+    run+=(--volume "${STORAGE_DIR}:/home/agent")
+
+    # Opt-in, and shared across all agents on purpose: one place for the notes, scripts and scratch
+    # files you want every tool to see, without giving any of them the others' credentials.
+    if [ "${DOCKER_CODE_SHARED:-0}" = "1" ]; then
+        mkdir -p "${STORAGE_ROOT}/shared" || die "cannot create ${STORAGE_ROOT}/shared"
+        run+=(--volume "${STORAGE_ROOT}/shared:/home/agent/shared")
+    fi
+
+    session_dind "${DIND_MODE}" "${store_suffix}" "${dind_is_default}"
+    session_network "${NET_MODE}"
+    session_mirror "${DIND_MODE}" "${NET_MODE}" "${mirror_is_default}"
+    session_local_models
+
+    if [ "${YOLO}" = "1" ] && [ "${NET_MODE}" = "full" ]; then
+        warn "YOLO with unrestricted egress: a bypassed session can reach anything on the network."
+        warn "Consider DOCKER_CODE_NET=restricted."
+    fi
+
+    if [ "${YOLO}" = "1" ] && [ -z "${AGENT_YOLO_ARGS}" ]; then
+        warn "${AGENT_TITLE} has no bypass flag, so DOCKER_CODE_YOLO does nothing here."
+        [ -z "${AGENT_NOTE}" ] || warn "${AGENT_NOTE}"
+    fi
+
+    # The container user is adjusted to these at startup, so files the agent writes into the
+    # bind-mounted workspace belong to you on the host rather than to uid 1000.
+    run+=(--env "DOCKER_CODE_HOST_UID=$(id -u)" --env "DOCKER_CODE_HOST_GID=$(id -g)")
+
+    # Behaviour switches the container side reads.
+    run+=(--env "DOCKER_CODE_YOLO=${YOLO}")
+    run+=(--env "DOCKER_CODE_NET=${NET_MODE}")
+    run+=(--env "DOCKER_CODE_DIND=${DIND_MODE}")
+
+    session_passthrough
+
+    # Opt-in, both of them: an agent that can read the SSH agent socket can use your key, and the
+    # git config may name paths that do not exist inside the container. Off by default is the whole
+    # point — the container is meant to be unable to act as you.
+    if [ "${DOCKER_CODE_SSH:-0}" = "1" ]; then
+        [ -n "${SSH_AUTH_SOCK:-}" ] || die "DOCKER_CODE_SSH=1 but no SSH agent is running"
+        run+=(--volume "${SSH_AUTH_SOCK}:/ssh-agent" --env "SSH_AUTH_SOCK=/ssh-agent")
+    fi
+
+    # ${HOME:-}, because a caller who named DOCKER_CODE_HOME explicitly may have no HOME at all, and
+    # `set -u` would abort here rather than skip an optional mount.
+    if [ "${DOCKER_CODE_GITCONFIG:-0}" = "1" ] && [ -f "${HOME:-}/.gitconfig" ]; then
+        run+=(--volume "${HOME}/.gitconfig:/home/agent/.gitconfig:ro")
+    fi
+
+    # Extra mounts, whitespace-separated: DOCKER_CODE_MOUNT="/data:/data:ro /srv/cache:/cache"
+    if [ -n "${DOCKER_CODE_MOUNT:-}" ]; then
+        # shellcheck disable=SC2086  # word splitting is the documented interface here
+        for mount in ${DOCKER_CODE_MOUNT}; do
+            run+=(--volume "${mount}")
+        done
+    fi
+
+    # Last resort for anything this script does not model.
+    if [ -n "${DOCKER_CODE_RUN_ARGS:-}" ]; then
+        # A plain global rather than `local extra_args=(...)`: array compound assignment to a local
+        # is one of the places where the bash macOS ships still surprises people. Same below.
+        # shellcheck disable=SC2206  # word splitting is the documented interface here
+        extra_args=(${DOCKER_CODE_RUN_ARGS})
+        run+=("${extra_args[@]}")
+    fi
+
+    if [ -n "${DOCKER_CODE_PULL:-}" ]; then
+        run+=(--pull "${DOCKER_CODE_PULL}")
+    fi
+
+    run+=("${IMAGE}" "$@")
+
+    # The seam the test suite uses: everything above is pure command construction, so it can be
+    # checked without a Docker daemon.
+    if [ "${DOCKER_CODE_DRY_RUN:-0}" = "1" ]; then
+        printf '%q ' "${run[@]}"
+        printf '\n'
+        exit 0
+    fi
+
+    # A trap rather than a line after the run: a session ended with Ctrl-C should turn the mirror off
+    # just as a session that exited normally does.
+    if [ "${manage_mirror}" = "1" ]; then
+        trap mirror_stop EXIT INT TERM
+    fi
+
+    # Nothing to retry, nothing to switch off afterwards: hand the process over and be gone.
+    if [ -z "${container_name}" ] && [ "${manage_mirror}" = "0" ]; then
+        exec "${run[@]}"
+    fi
+
+    # The number came from what the daemon reported a moment ago, and a second launch in that same
+    # moment can still claim it first. 125 is Docker's code for "the container never ran", so nothing
+    # has happened yet and starting over costs nothing — but only the name is worth starting over
+    # for, which is why the name has to actually be taken now before this retries.
+    # `|| status=$?` rather than a bare call: under `set -e` a non-zero exit here would end the
+    # script before it could look at the code at all.
+    local status=0
+    "${run[@]}" || status=$?
+
+    if [ -z "${container_name}" ] || [ "${status}" -ne 125 ] ||
+        ! taken_names | grep -qxF "${container_name}"; then
+        exit "${status}"
+    fi
+
+    warn "another session claimed ${container_name} first — the conflict above is harmless,"
+    warn "this session simply starts without a name"
+
+    # The first --name is ours; anything later came from DOCKER_CODE_RUN_ARGS and stays.
+    local drop_value=0 dropped=0 arg
+    unnamed=()
+    for arg in "${run[@]}"; do
+        if [ "${drop_value}" = "1" ]; then
+            drop_value=0
+            continue
+        fi
+        if [ "${dropped}" = "0" ] && [ "${arg}" = "--name" ]; then
+            drop_value=1
+            dropped=1
+            continue
+        fi
+        unnamed+=("${arg}")
+    done
+
+    # Still not exec: the mirror trap has to survive this second attempt as well.
+    status=0
+    "${unnamed[@]}" || status=$?
+    exit "${status}"
+}
+
+taken_names() {
+    docker ps --all --format '{{.Names}}' 2>/dev/null
+}
+
+next_free_slot() {
+    local prefix="$1" used n
+    used="$(taken_names)" || return 1
+
+    n=1
+    while [ "${n}" -le 100 ]; do
+        if ! printf '%s\n' "${used}" | grep -qxF "${prefix}_${n}"; then
+            printf '%s\n' "${n}"
+            return 0
+        fi
+        n=$((n + 1))
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------------------------
+# Docker-in-Docker
+#
+# The host's Docker socket is never mounted: a container holding /var/run/docker.sock is effectively
+# root on the host. The container runs its own daemon, so anything the agent builds or starts stays
+# inside it.
+#
+# Whether that daemon can run without --privileged is a property of the host, not a preference.
+# Ubuntu 24.04 and later ship kernel.apparmor_restrict_unprivileged_userns=1, which confines any
+# process that creates a user namespace into a profile that strips CAP_SYS_ADMIN — and rootlesskit
+# then cannot set up its uid map:
+#
+#   rootless, no --privileged   -> newuidmap: write to uid_map failed: Operation not permitted
+#   rootless, --privileged      -> daemon starts, nested containers run
+#
+# So `1` means "rootless, with the least privilege this host actually allows", and says which it
+# picked. Naming a mode explicitly always wins over the detection.
+# ---------------------------------------------------------------------------------------------
+host_restricts_userns() {
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]
+}
+
+session_dind() {
+    local mode="$1" suffix="$2" is_default="$3" docker_store
+
+    case "${mode}" in
+        1|true|auto)
+            if [ "$(id -u)" -eq 0 ]; then
+                # A root host means a root container — see align_user_ids in the entrypoint — and
+                # dockerd-rootless.sh refuses to start as root. Classic dind is the only inner daemon
+                # left, and it needs the privileged flag anyway.
+                warn "you are root, so the container runs as root and the rootless daemon cannot"
+                warn "start; using classic docker-in-docker. Run as a normal user to avoid this."
+                mode=privileged
+            elif host_restricts_userns; then
+                warn "this host restricts unprivileged user namespaces; starting the container"
+                warn "--privileged so the inner Docker daemon can run. DOCKER_CODE_DIND=rootless"
+                warn "refuses that, 0 runs without an inner Docker."
+                mode=rootless-privileged
+            else
+                mode=rootless
+            fi
+            ;;
+    esac
+
+    # The resolved mode, never the 1/auto sentinel, is what the container is told.
+    DIND_MODE="${mode}"
+
+    case "${mode}" in
+        rootless|rootless-privileged)
+            # The daemon runs as the unprivileged container user in a user namespace either way; only
+            # the container around it differs. Its image store needs no mount of its own: rootless
+            # Docker keeps it under ~/.local/share/docker, already inside the bind mount above.
+            #
+            # macOS is the exception, and not by choice: the state directory is shared into the Linux
+            # VM through virtiofs or a FUSE bridge, and no overlay driver can use such a filesystem
+            # as its upper layer — the daemon dies at graphdriver init, which looks exactly like "the
+            # daemon is not running". A Docker volume lives in the VM's own filesystem.
+            #
+            # A name of its own, not the one classic dind uses: the two daemons lay their stores out
+            # for different owners, and letting a mode switch hand one daemon the other's directory
+            # turns a working store into a broken one.
+            docker_store="$(agent_knob DOCKER_STORE "")"
+            if [ -z "${docker_store}" ]; then
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    docker_store="docker-code-${AGENT_ID}-rootless"
+                elif [ -n "${suffix}" ]; then
+                    docker_store="${STORAGE_ROOT}/${AGENT_ID}/.local/share/docker"
+                fi
+            fi
+            if [ -n "${docker_store}" ]; then
+                docker_store="$(prepare_store "${docker_store}${suffix}")"
+                run+=(--volume "${docker_store}:/home/agent/.local/share/docker")
+            fi
+
+            # fuse-overlayfs is how rootless Docker layers images on kernels that will not give an
+            # unprivileged user overlayfs directly. Passing a device the host does not have is a hard
+            # `docker run` error, and kernels from 5.11 on do not need it, so only offer it when it
+            # is there.
+            if [ -e /dev/fuse ]; then
+                run+=(--device /dev/fuse)
+            fi
+
+            # seccomp has to go: the default profile blocks the syscalls rootlesskit needs.
+            run+=(--security-opt seccomp=unconfined)
+
+            # AppArmor deliberately stays on, even though every dind-rootless recipe on the internet
+            # turns it off as well. Under the userns restriction above, `apparmor=unconfined` is what
+            # breaks rootless Docker — the stock docker-default profile carries the `userns create`
+            # permission that allows it. Opt out only for a host whose policy blocks something else.
+            if [ "${DOCKER_CODE_APPARMOR:-}" = "unconfined" ]; then
+                run+=(--security-opt apparmor=unconfined)
+            fi
+
+            if [ "${mode}" = "rootless-privileged" ]; then
+                run+=(--privileged)
+            fi
+            ;;
+        privileged)
+            # Classic dind: the inner daemon runs as root. Same isolation from the host's Docker
+            # daemon, but nothing inside the container is unprivileged any more. Its store lives at
+            # /var/lib/docker, outside the home, so it gets a mount of its own.
+            if [ "${is_default}" = "1" ]; then
+                warn "inner Docker runs privileged — DOCKER_CODE_DIND=rootless or 0 changes that"
+            else
+                warn "the inner Docker daemon will run as root in a privileged container"
+            fi
+            docker_store="$(prepare_store "$(agent_knob DOCKER_STORE "docker-code-${AGENT_ID}")${suffix}")"
+            run+=(--volume "${docker_store}:/var/lib/docker")
+            run+=(--privileged)
+            ;;
+        0|false|none)
+            ;;
+        *)
+            die "DOCKER_CODE_DIND must be one of: 1 (auto), rootless, rootless-privileged," \
+                "privileged, 0"
+            ;;
+    esac
+}
+
+session_network() {
+    case "$1" in
+        full)
+            ;;
+        restricted)
+            # The firewall runs inside the container, so the container needs to be allowed to write
+            # iptables rules for its own namespace.
+            run+=(--cap-add NET_ADMIN --cap-add NET_RAW)
+            ;;
+        none)
+            run+=(--network none)
+            ;;
+        *)
+            die "DOCKER_CODE_NET must be one of: full, restricted, none"
+            ;;
+    esac
+}
+
+session_mirror() {
+    local dind="$1" net="$2" is_default="$3"
+    mirror_url=""
+    manage_mirror=0
+
+    mirror_check_subnet
+
+    case "${DOCKER_CODE_REGISTRY_MIRROR:-0}" in
+        0|false|"")
+            return 0
+            ;;
+        1|true)
+            case "${dind}" in
+                0|false|none)
+                    [ "${is_default}" = "1" ] ||
+                        warn "no inner Docker daemon, so there is nothing to point at a mirror"
+                    return 0
+                    ;;
+            esac
+            if [ "${net}" = "none" ]; then
+                [ "${is_default}" = "1" ] ||
+                    warn "DOCKER_CODE_NET=none leaves the container without a network, so the" \
+                         "registry mirror stays off"
+                return 0
+            fi
+            manage_mirror=1
+            mirror_url="http://${MIRROR_CONTAINER}:5000"
+            ;;
+        http://*|https://*)
+            # Someone else's mirror, already running. We only tell the inner daemon about it.
+            mirror_url="${DOCKER_CODE_REGISTRY_MIRROR}"
+            ;;
+        *)
+            die "DOCKER_CODE_REGISTRY_MIRROR must be 1, 0, or the URL of a mirror you run yourself"
+            ;;
+    esac
+
+    if [ "${manage_mirror}" = "1" ]; then
+        if [ "${DOCKER_CODE_DRY_RUN:-0}" = "1" ]; then
+            # A dry run describes what would happen. Starting a container is not a description.
+            run+=(--network "${MIRROR_NETWORK}")
+        elif mirror_start; then
+            run+=(--network "${MIRROR_NETWORK}")
+        else
+            warn "could not start the registry mirror (${MIRROR_IMAGE}); continuing without it"
+            mirror_url=""
+            manage_mirror=0
+        fi
+    fi
+
+    if [ -n "${mirror_url}" ]; then
+        run+=(--env "DOCKER_CODE_MIRROR_URL=${mirror_url}")
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------
+# Local models
+#
+# The container joins the model network, gets loopback forwards to the two services, and receives
+# whichever environment its agent.env says its tool reads. Everything tool-specific is in agent.env;
+# this function knows only the two wire-format families.
+# ---------------------------------------------------------------------------------------------
+session_local_models() {
+    [ "${DOCKER_CODE_LOCAL:-0}" = "1" ] || return 0
+
+    if [ "${AGENT_LOCAL_MODE}" = "none" ]; then
+        warn "${AGENT_TITLE} cannot use a local model, so DOCKER_CODE_LOCAL is ignored."
+        [ -z "${AGENT_NOTE}" ] || warn "${AGENT_NOTE}"
+        return 0
+    fi
+
+    if [ "${DOCKER_CODE_NET:-full}" = "none" ]; then
+        warn "DOCKER_CODE_NET=none cuts the container off from the model services; local models off"
+        return 0
+    fi
+
+    local url model
+    url="$(models_url_for_mode "${AGENT_LOCAL_MODE}")" ||
+        die "agents/${AGENT_ID}/agent.env names an AGENT_LOCAL_MODE this launcher does not know"
+
+    model="${DOCKER_CODE_LOCAL_MODEL:-}"
+    if [ -z "${model}" ]; then
+        warn "no model named; set DOCKER_CODE_LOCAL_MODEL (see: docker-code models list)"
+    fi
+
+    if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
+        models_up || {
+            warn "the local model services did not start; continuing on the cloud provider"
+            return 0
+        }
+    fi
+
+    run+=(--network "${MODELS_NETWORK}")
+    run+=(--env "DOCKER_CODE_LOCAL_BRIDGE=$(models_bridge_spec)")
+    run+=(--env "DOCKER_CODE_LOCAL_URL=${url}")
+    [ -z "${model}" ] || run+=(--env "DOCKER_CODE_LOCAL_MODEL=${model}")
+
+    # The raw weights, for tools and scripts that read model files directly rather than over HTTP.
+    # Read-only: this is the one directory every agent shares, and a session that can rewrite it
+    # could hand every other agent a different model than the one they asked for.
+    local dir
+    for dir in gguf hf; do
+        if [ -d "$(models_dir)/${dir}" ]; then
+            run+=(--volume "$(models_dir)/${dir}:/models/${dir}:ro")
+        fi
+    done
+
+    # AGENT_LOCAL_ENV is a ;-separated list of NAME=value, where %u is the gateway URL and %m the
+    # model. Expanded here rather than in the container so that a dry run shows exactly what the
+    # tool will see.
+    local pair expanded
+    local IFS=';'
+    for pair in ${AGENT_LOCAL_ENV}; do
+        [ -n "${pair}" ] || continue
+        expanded="${pair//%u/${url}}"
+        expanded="${expanded//%m/${model}}"
+        run+=(--env "${expanded}")
+    done
+}
+
+# ---------------------------------------------------------------------------------------------
+# Environment pass-through
+#
+# An explicit list rather than --env-file or a blanket copy: the container should get the variables
+# that configure its tool, not every secret that happens to be exported in the calling shell. The
+# per-tool half comes from AGENT_ENV_VARS; the list below is what any agent in a terminal needs.
+# ---------------------------------------------------------------------------------------------
+session_passthrough() {
+    # Plain globals rather than locals: array compound assignment to a local is one of the places
+    # where the bash macOS ships still surprises people.
+    passthrough_vars=(
+        # Telemetry
+        DISABLE_TELEMETRY DISABLE_ERROR_REPORTING DO_NOT_TRACK
+        # Corporate network
+        HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
+        NODE_EXTRA_CA_CERTS
+        # Terminal
+        TERM COLORTERM TZ LANG
+    )
+
+    # shellcheck disable=SC2206  # a space-separated list from agent.env is the documented format
+    agent_vars=(${AGENT_ENV_VARS})
+    [ "${#agent_vars[@]}" -eq 0 ] || passthrough_vars+=("${agent_vars[@]}")
+
+    # Anything else, by name: DOCKER_CODE_ENV="GH_TOKEN,MY_REGISTRY_URL"
+    if [ -n "${DOCKER_CODE_ENV:-}" ]; then
+        IFS=',' read -r -a extra_vars <<<"${DOCKER_CODE_ENV}"
+        passthrough_vars+=("${extra_vars[@]}")
+    fi
+
+    local var
+    for var in "${passthrough_vars[@]}"; do
+        [ -n "${var}" ] || continue
+        # Only forward what is actually set, so an unset variable stays unset inside rather than
+        # arriving as an empty string that overrides a container default.
+        if [ -n "${!var:-}" ]; then
+            run+=(--env "${var}=${!var}")
+        fi
+    done
+
+    for var in DOCKER_CODE_ALLOW_DOMAINS DOCKER_CODE_ALLOW_GITHUB DOCKER_CODE_DIND_WAIT \
+        DOCKER_CODE_SHELL DOCKER_CODE_INSECURE_REGISTRIES; do
+        if [ -n "${!var:-}" ]; then
+            run+=(--env "${var}=${!var}")
+        fi
+    done
+}
+
+# ==============================================================================================
+# The management CLI
+# ==============================================================================================
+cmd_list() {
+    printf '%-10s %-22s %-16s %-16s %s\n' AGENT WRAPPER COMMAND LOCAL-MODELS IMAGE
+    local id
+    for id in $(agent_ids); do
+        agent_load "${id}" || continue
+        printf '%-10s %-22s %-16s %-16s %s\n' \
+            "${AGENT_ID}" "${AGENT_WRAPPER}" "${AGENT_BIN}" "${AGENT_LOCAL_MODE}" "$(agent_image)"
+    done
+}
+
+cmd_doctor() {
+    local rc=0
+
+    echo "root:      ${DOCKER_CODE_ROOT}"
+    echo "state:     ${STORAGE_ROOT}"
+    echo "docker:    $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'not reachable')"
+    echo
+
+    echo "registry:"
+    if agents_validate_all; then
+        echo "  all $(agent_ids | wc -l | tr -d ' ') agent definitions are valid"
+    else
+        rc=1
+    fi
+    echo
+
+    echo "images:"
+    local id
+    for id in $(agent_ids); do
+        agent_load "${id}" || continue
+        if docker image inspect "$(agent_image)" >/dev/null 2>&1; then
+            printf '  %-10s present\n' "${AGENT_ID}"
+        else
+            printf '  %-10s missing  (docker-code build %s)\n' "${AGENT_ID}" "${AGENT_ID}"
+        fi
+    done
+    echo
+
+    echo "state directories:"
+    for id in $(agent_ids); do
+        if [ -d "${STORAGE_ROOT}/${id}" ]; then
+            printf '  %-10s %s\n' "${id}" "$(du -sh "${STORAGE_ROOT}/${id}" 2>/dev/null | cut -f1)"
+        else
+            printf '  %-10s not created yet\n' "${id}"
+        fi
+    done
+    echo
+
+    echo "local models:"
+    models_status | sed 's/^/  /'
+
+    return "${rc}"
+}
+
+cmd_models() {
+    require_docker
+    local action="${1:-status}"
+    shift || true
+
+    case "${action}" in
+        up)     models_up && models_status ;;
+        down)   models_down ;;
+        status) models_status ;;
+        pull)   [ "$#" -gt 0 ] || die "usage: docker-code models pull <model>"
+                models_exec_ollama pull "$@" ;;
+        list|ls) models_exec_ollama list ;;
+        rm)     [ "$#" -gt 0 ] || die "usage: docker-code models rm <model>"
+                models_exec_ollama rm "$@" ;;
+        run)    [ "$#" -gt 0 ] || die "usage: docker-code models run <model>"
+                docker exec -it "${OLLAMA_CONTAINER}" ollama run "$@" ;;
+        logs)   docker logs --tail 100 -f "${1:-${OLLAMA_CONTAINER}}" ;;
+        *)      die "unknown: docker-code models ${action} (up, down, status, pull, list, rm, run, logs)" ;;
+    esac
+}
+
+cmd_registry() {
+    require_docker
+    case "${1:-status}" in
+        start)  mirror_check_subnet; mirror_start && echo "mirror running at ${MIRROR_CONTAINER}:5000" ;;
+        stop)   container_name=""; mirror_stop ;;
+        status)
+            printf 'container: %s\n' "${MIRROR_CONTAINER}"
+            printf 'state:     %s\n' \
+                "$(docker inspect -f '{{.State.Status}}' "${MIRROR_CONTAINER}" 2>/dev/null || echo '-')"
+            printf 'upstream:  %s\n' "${MIRROR_UPSTREAM}"
+            printf 'store:     %s\n' "$(mirror_store)"
+            [ ! -d "$(mirror_store)" ] ||
+                printf 'on disk:   %s\n' "$(du -sh "$(mirror_store)" 2>/dev/null | cut -f1)"
+            ;;
+        *) die "unknown: docker-code registry $1 (start, stop, status)" ;;
+    esac
+}
+
+cmd_build() {
+    require_docker
+    [ -x "${DOCKER_CODE_ROOT}/scripts/build.sh" ] ||
+        die "scripts/build.sh is missing or not executable"
+    "${DOCKER_CODE_ROOT}/scripts/build.sh" "$@"
+}
+
+cmd_update() {
+    require_docker
+    local ids="$*"
+    [ -n "${ids}" ] || ids="$(agent_ids)"
+    local id
+    for id in ${ids}; do
+        agent_load "${id}" || continue
+        echo "==> $(agent_image)"
+        docker pull "$(agent_image)" || warn "could not pull $(agent_image)"
+    done
+}
+
+cmd_help() {
+    cat <<EOF
+docker-code — run TUI coding agents in containers, one persistent directory each.
+
+Usage:
+  <agent>-docker [args...]        start that agent (claude-docker, gemini-docker, …)
+  docker-code run <agent> [args]  the same thing, spelled out
+  docker-code list                the agents this installation knows
+  docker-code build [agent...]    build images locally (default: base + all agents)
+  docker-code update [agent...]   pull the published images
+  docker-code models <cmd>        up | down | status | pull <m> | list | rm <m> | run <m> | logs
+  docker-code registry <cmd>      start | stop | status  (Docker Hub pull-through cache)
+  docker-code doctor              what is installed, valid and present
+  docker-code help                this text
+
+Session knobs (prefix DOCKER_CODE_, or DOCKER_CODE_<AGENT>_ for one agent):
+  YOLO=1                run without permission prompts
+  NET=full|restricted|none        egress policy (default: full)
+  DIND=privileged|rootless|0      inner Docker (default: privileged)
+  LOCAL=1               use the shared local models
+  LOCAL_MODEL=<name>    which one (docker-code models list)
+  SHELL=1               drop into bash instead of the agent
+  SHARED=1              mount ~/${STATE_DIR_NAME}/shared into the session
+  MOUNT="/a:/a:ro"      extra bind mounts, whitespace separated
+  ENV="GH_TOKEN,FOO"    extra variables to pass through
+  HOME=<abs path>       where state lives (default: \$HOME/${STATE_DIR_NAME})
+  DRY_RUN=1             print the docker run command instead of running it
+
+State lives in ${STORAGE_ROOT}:
+  <agent>/    that agent's entire home directory inside its container
+  models/     the weights every agent shares
+  registry/   the Docker Hub pull-through cache
+  shared/     opt-in, mounted into every agent at ~/shared
+
+Your real home directory is never mounted into a container. Full documentation: README.md,
+AGENTS.md (adding a tool), LOCAL-MODELS.md, REGISTRY.md.
+EOF
+}
+
+# ==============================================================================================
+# Dispatch
+# ==============================================================================================
+if [ "${SELF_NAME}" != "docker-code" ]; then
+    agent="$(agent_for_wrapper "${SELF_NAME}")" ||
+        die "no agent is registered for the name '${SELF_NAME}'. Known wrappers:" \
+            "$(agent_wrappers | awk '{print $2}' | tr '\n' ' ')"
+    # run_session always exits (exec, or an explicit exit after the run), so this is belt and braces.
+    # shellcheck disable=SC2317
+    run_session "${agent}" "$@"
+fi
+
+case "${1:-help}" in
+    run)
+        shift
+        [ "$#" -gt 0 ] || die "usage: docker-code run <agent> [args...]"
+        agent="$1"
+        shift
+        run_session "${agent}" "$@"
+        ;;
+    list|ls)   cmd_list ;;
+    build)     shift; cmd_build "$@" ;;
+    update)    shift; cmd_update "$@" ;;
+    models)    shift; cmd_models "$@" ;;
+    registry)  shift; cmd_registry "$@" ;;
+    doctor)    cmd_doctor ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        # `docker-code gemini …` is a natural thing to type, so accept it rather than correct it.
+        if agent_load "$1" >/dev/null 2>&1; then
+            agent="$1"
+            shift
+            run_session "${agent}" "$@"
+        else
+            die "unknown command '$1' (docker-code help)"
+        fi
+        ;;
+esac
