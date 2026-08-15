@@ -71,7 +71,8 @@ pipeline {
 
         // The architectures scripts/docker_manifest.sh joins into one manifest list. Adding a
         // platform is a parallel branch below plus an entry here — the two have to stay in step.
-        MANIFEST_ARCHS = 'amd64 arm64'
+        // MANIFEST_ARCHS = 'amd64 arm64'
+        MANIFEST_ARCHS = 'amd64'
     }
 
     triggers {
