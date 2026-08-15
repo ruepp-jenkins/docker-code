@@ -13,6 +13,18 @@ MODELS_LABEL="com.ruepp.docker-code"
 
 OLLAMA_CONTAINER="${DOCKER_CODE_OLLAMA_CONTAINER:-docker-code-ollama}"
 OLLAMA_IMAGE="${DOCKER_CODE_OLLAMA_IMAGE:-ollama/ollama:latest}"
+
+# AMD is a different image, not a different flag: ROCm ships as its own build of Ollama, several GB
+# heavier than the default one, so it is chosen by DOCKER_CODE_MODELS_GPU=rocm rather than pulled
+# onto every host that happens to have a Radeon in it. An explicit DOCKER_CODE_OLLAMA_IMAGE still
+# wins over it, which is why this is only the fallback and the override is read where it is used.
+OLLAMA_ROCM_IMAGE="ollama/ollama:rocm"
+
+# /dev/kfd is ROCm's compute interface, /dev/dri holds the render nodes; the runtime needs both. And
+# unlike NVIDIA there is no container runtime that would inject them, which is the whole reason this
+# path exists next to --gpus: on AMD the devices have to be named.
+OLLAMA_ROCM_DEVICES=(--device /dev/kfd --device /dev/dri)
+
 OLLAMA_PORT=11434
 
 LITELLM_CONTAINER="${DOCKER_CODE_LITELLM_CONTAINER:-docker-code-litellm}"
@@ -117,7 +129,7 @@ models_container_running() {
 }
 
 models_start_ollama() {
-    local store
+    local store image kv
     models_container_running "${OLLAMA_CONTAINER}" && return 0
 
     docker rm -f "${OLLAMA_CONTAINER}" >/dev/null 2>&1 || true
@@ -144,8 +156,10 @@ models_start_ollama() {
     #
     # The detection sees the NVIDIA Container Toolkit's registered runtime. A host wired up through
     # CDI only has no such runtime, so `auto` finds nothing there and falls back to the CPU — which
-    # is why the value is more than a boolean: DOCKER_CODE_MODELS_GPU=1 forces `--gpus all`, and
-    # anything else is passed to --gpus verbatim, e.g. "device=0" or "all,capabilities=compute".
+    # is why the value is more than a boolean: DOCKER_CODE_MODELS_GPU=1 forces `--gpus all`, `rocm`
+    # takes the AMD path, and anything else is passed to --gpus verbatim, e.g. "device=0" or
+    # "all,capabilities=compute".
+    image="${DOCKER_CODE_OLLAMA_IMAGE:-${OLLAMA_IMAGE}}"
     case "${DOCKER_CODE_MODELS_GPU:-auto}" in
         0|false|none|off)
             ;;
@@ -153,15 +167,48 @@ models_start_ollama() {
             if docker info --format '{{range $name, $r := .Runtimes}}{{$name}} {{end}}' 2>/dev/null |
                 grep -qw nvidia; then
                 models_ollama_create+=(--gpus all)
+            elif [ -e /dev/kfd ]; then
+                # An AMD card is not auto-detected into use, because using it means pulling a second,
+                # much larger image — a decision that belongs to the user. Saying so once, while the
+                # container is being created, still beats a session that is silently on the CPU.
+                warn "an AMD GPU is present (/dev/kfd), but ROCm needs its own Ollama image;"
+                warn "DOCKER_CODE_MODELS_GPU=rocm uses it — see the AMD section of LOCAL-MODELS.md."
             fi
             ;;
         1|true|all)
             models_ollama_create+=(--gpus all)
             ;;
+        rocm|amd|amdgpu)
+            models_ollama_create+=("${OLLAMA_ROCM_DEVICES[@]}")
+            image="${DOCKER_CODE_OLLAMA_IMAGE:-${OLLAMA_ROCM_IMAGE}}"
+            ;;
         *)
             models_ollama_create+=(--gpus "${DOCKER_CODE_MODELS_GPU}")
             ;;
     esac
+
+    # Environment for the daemon, whitespace-separated: DOCKER_CODE_OLLAMA_ENV="A=1 B=2".
+    #
+    # This is where the ROCm knobs live. A card whose ISA ROCm does not list by name runs anyway with
+    # HSA_OVERRIDE_GFX_VERSION=<the closest supported one>, and HIP_VISIBLE_DEVICES picks one card
+    # out of several. Both belong to this daemon and to nothing else, which is why they are a knob of
+    # their own rather than something the session passes through.
+    if [ -n "${DOCKER_CODE_OLLAMA_ENV:-}" ]; then
+        # shellcheck disable=SC2086  # word splitting is the documented interface here
+        for kv in ${DOCKER_CODE_OLLAMA_ENV}; do
+            models_ollama_create+=(--env "${kv}")
+        done
+    fi
+
+    # Last resort for anything this file does not model — a second render node, a group to add under
+    # rootless Docker, a seccomp profile an older ROCm needs.
+    if [ -n "${DOCKER_CODE_OLLAMA_ARGS:-}" ]; then
+        # A plain global rather than a local array: same reason as in bin/docker-code — compound
+        # assignment to a local is one of the places where the bash macOS ships surprises people.
+        # shellcheck disable=SC2206  # word splitting is the documented interface here
+        models_ollama_extra=(${DOCKER_CODE_OLLAMA_ARGS})
+        models_ollama_create+=("${models_ollama_extra[@]}")
+    fi
 
     # Published only when asked for. The agents reach it over the Docker network, so by default
     # nothing new listens on the host — and when it is published it is bound to loopback.
@@ -169,7 +216,7 @@ models_start_ollama() {
         models_ollama_create+=(--publish "127.0.0.1:${OLLAMA_PORT}:${OLLAMA_PORT}")
     fi
 
-    models_ollama_create+=("${OLLAMA_IMAGE}")
+    models_ollama_create+=("${image}")
 
     # Docker's own message, not a swallowed exit code. The failure people actually hit here is
     # asking for a GPU the host cannot provide —
@@ -183,6 +230,11 @@ models_start_ollama() {
 
     [ -z "${err}" ] || warn "${err}"
     case "${err}" in
+        */dev/kfd*|*/dev/dri*)
+            warn "that is the AMD device request failing: /dev/kfd comes from the amdgpu kernel"
+            warn "driver, so 'ls -l /dev/kfd /dev/dri' on the host is the next step. DOCKER_CODE_MODELS_GPU=0"
+            warn "runs on the CPU; see the AMD section of LOCAL-MODELS.md."
+            ;;
         *GPU*|*gpu*|*nvidia*)
             warn "that is the GPU request failing. DOCKER_CODE_MODELS_GPU=0 runs on the CPU;"
             warn "see the GPU section of LOCAL-MODELS.md for what the host needs."
@@ -279,13 +331,23 @@ models_status() {
 # *find* one. They come apart — a container started with --gpus whose driver is too old for the
 # runtime still falls back to the CPU, and the difference is the whole diagnosis.
 models_gpu_status() {
-    local requests inference library name
+    local requests devices inference library name
 
+    # Two ways in, and the answer has to name which one was taken: NVIDIA arrives as a device
+    # *request* the runtime fulfils, AMD as plain device nodes bound into the container.
     requests="$(docker inspect -f '{{json .HostConfig.DeviceRequests}}' "${OLLAMA_CONTAINER}" 2>/dev/null || true)"
+    devices="$(docker inspect -f '{{json .HostConfig.Devices}}' "${OLLAMA_CONTAINER}" 2>/dev/null || true)"
     case "${requests}" in
         ''|null|'[]')
-            echo "gpu:      not requested — the container was started for CPU inference"
-            echo "          (DOCKER_CODE_MODELS_GPU=1 forces it; see LOCAL-MODELS.md)"
+            case "${devices}" in
+                */dev/kfd*)
+                    echo "gpu:      requested at start (--device /dev/kfd, the AMD/ROCm path)"
+                    ;;
+                *)
+                    echo "gpu:      not requested — the container was started for CPU inference"
+                    echo "          (DOCKER_CODE_MODELS_GPU=1 for NVIDIA, =rocm for AMD; see LOCAL-MODELS.md)"
+                    ;;
+            esac
             ;;
         *)
             echo "gpu:      requested at start (--gpus)"

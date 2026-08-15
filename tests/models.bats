@@ -219,6 +219,57 @@ esac'
     [[ "$(stub_calls docker)" != *"--gpus"* ]]
 }
 
+@test "the AMD path binds the ROCm devices and takes the ROCm image" {
+    # NVIDIA arrives through a container runtime that injects the card; AMD has no such runtime, so
+    # the device nodes have to be named — and ROCm is a separate build of Ollama, not a flag on the
+    # default one. Both halves have to happen from the single value, or the user gets a container
+    # that starts and computes on the CPU anyway.
+    make_stub docker 'case "$*" in
+    *Runtimes*) echo "runc " ;;
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'DOCKER_CODE_MODELS_GPU=rocm models_up'
+    [ "${status}" -eq 0 ]
+
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"--device /dev/kfd"* ]]
+    [[ "${calls}" == *"--device /dev/dri"* ]]
+    [[ "${calls}" == *"ollama/ollama:rocm"* ]]
+    [[ "${calls}" != *"--gpus"* ]]
+}
+
+@test "an image named by hand wins over the ROCm default" {
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'DOCKER_CODE_MODELS_GPU=rocm DOCKER_CODE_OLLAMA_IMAGE=my/ollama:custom models_up'
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"my/ollama:custom"* ]]
+    [[ "${calls}" != *"ollama/ollama:rocm"* ]]
+    # Still the devices: the override says which image, not whether the card is bound in.
+    [[ "${calls}" == *"--device /dev/kfd"* ]]
+}
+
+@test "the daemon takes extra environment and extra docker arguments" {
+    # HSA_OVERRIDE_GFX_VERSION is what makes a card ROCm does not list by name run at all, and it
+    # belongs to this daemon — a session variable would never reach it.
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'DOCKER_CODE_MODELS_GPU=rocm \
+        DOCKER_CODE_OLLAMA_ENV="HSA_OVERRIDE_GFX_VERSION=11.0.0 HIP_VISIBLE_DEVICES=0" \
+        DOCKER_CODE_OLLAMA_ARGS="--security-opt seccomp=unconfined" models_up'
+    [ "${status}" -eq 0 ]
+
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"--env HSA_OVERRIDE_GFX_VERSION=11.0.0"* ]]
+    [[ "${calls}" == *"--env HIP_VISIBLE_DEVICES=0"* ]]
+    [[ "${calls}" == *"--security-opt seccomp=unconfined"* ]]
+}
+
 @test "status answers the GPU question in its own right" {
     # Two separate facts, because they come apart: a container can be started with --gpus and Ollama
     # still fall back to the CPU. "requested at start" plus "computing on cpu" is the diagnosis.
@@ -233,12 +284,28 @@ esac'
     [[ "${output}" == *"computing on cpu"* ]]
 }
 
+@test "status recognises the AMD path, which leaves no device request behind" {
+    # --device does not show up in .HostConfig.DeviceRequests, so a status that only looked there
+    # would tell an AMD user their card was never asked for while it is busy answering.
+    make_stub docker 'case "$*" in
+    *DeviceRequests*) echo "null" ;;
+    *Devices*) echo "[{\"PathOnHost\":\"/dev/kfd\"}]" ;;
+    *logs*) echo "level=INFO msg=\"inference compute\" id=0 library=rocm description=AMD-Radeon-RX-7900-XTX" ;;
+    *) echo running ;;
+esac'
+    run models_sh 'models_status'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"/dev/kfd"* ]]
+    [[ "${output}" != *"not requested"* ]]
+    [[ "${output}" == *"computing on rocm"* ]]
+}
+
 @test "the documented GPU values are the ones the code accepts" {
     block="$(sed -n '/DOCKER_CODE_MODELS_GPU:-auto/,/esac/p' "${REPO_ROOT}/lib/models.sh")"
     [ -n "${block}" ]
     # Every value the GPU table in LOCAL-MODELS.md offers has to appear in that case statement, or
     # the page promises a setting that silently does something else.
-    for value in auto 1 0; do
+    for value in auto 1 0 rocm; do
         [[ "${block}" == *"${value}"* ]] || {
             echo "LOCAL-MODELS.md documents DOCKER_CODE_MODELS_GPU=${value}, the code has no branch for it"
             return 1
@@ -248,6 +315,22 @@ esac'
     # And the page has to tell people how to check, not just how to set it.
     grep -q 'ollama ps' "${REPO_ROOT}/LOCAL-MODELS.md"
     grep -q 'inference compute' "${REPO_ROOT}/LOCAL-MODELS.md"
+}
+
+@test "the AMD knobs the page documents are knobs the code reads" {
+    # The AMD path used to be a paragraph saying it was possible "via the environment", with no
+    # variable behind it that did anything. Each of these has to exist on both sides.
+    for var in DOCKER_CODE_OLLAMA_IMAGE DOCKER_CODE_OLLAMA_ENV DOCKER_CODE_OLLAMA_ARGS; do
+        grep -q "${var}" "${REPO_ROOT}/lib/models.sh" || {
+            echo "LOCAL-MODELS.md documents ${var}, lib/models.sh never reads it"; return 1
+        }
+        grep -q "${var}" "${REPO_ROOT}/LOCAL-MODELS.md" || {
+            echo "lib/models.sh reads ${var}, LOCAL-MODELS.md never mentions it"; return 1
+        }
+    done
+    # The two device nodes are the whole AMD story; a page that names neither cannot be followed.
+    grep -q '/dev/kfd' "${REPO_ROOT}/LOCAL-MODELS.md"
+    grep -q 'HSA_OVERRIDE_GFX_VERSION' "${REPO_ROOT}/LOCAL-MODELS.md"
 }
 
 @test "status prints the endpoints and the API key" {

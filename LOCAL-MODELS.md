@@ -130,9 +130,30 @@ Ohne GPU rechnet ein 14-B-Modell auf der CPU — das funktioniert, ist aber etwa
 langsamer. Ollama entscheidet das nicht selbst: der Container bekommt die Karte durchgereicht, oder
 er bekommt sie nicht.
 
-### Was gebraucht wird
+Zwei Hersteller, zwei völlig verschiedene Wege in den Container: NVIDIA über eine Container-Runtime,
+die die Karte injiziert (`--gpus`), AMD über zwei Gerätedateien, die man selbst hineinreicht
+(`--device`) — plus ein anderes Image. Deshalb ist `DOCKER_CODE_MODELS_GPU` kein Schalter, sondern
+eine Wahl:
 
-**NVIDIA unter Linux** — der Fall, für den das hier gebaut ist:
+| `DOCKER_CODE_MODELS_GPU` | Wirkung |
+|---|---|
+| *ungesetzt* / `auto` | GPU nur, wenn Docker die `nvidia`-Runtime meldet — Standard |
+| `1` | `--gpus all` erzwingen, auch wenn die Erkennung nichts findet |
+| `device=0` | an eine bestimmte NVIDIA-Karte binden (wird unverändert an `--gpus` gereicht) |
+| `rocm` | **AMD**: `--device /dev/kfd --device /dev/dri` **und** das Image `ollama/ollama:rocm` |
+| `0` | CPU erzwingen |
+
+Alles davon wirkt beim **Erzeugen** des Containers. Nach jeder Änderung also:
+
+```bash
+docker-code models down
+DOCKER_CODE_MODELS_GPU=rocm docker-code models up
+```
+
+Dauerhaft gehört die Variable in die `.bashrc` — sie ist eine Einstellung der Modelldienste, nicht
+der Session, und hat deshalb **keine** `DOCKER_CODE_<AGENT>_`-Form.
+
+### NVIDIA unter Linux
 
 1. Ein NVIDIA-Treiber auf dem **Host** (nicht im Container). `nvidia-smi` muss auf dem Host laufen.
 2. Das **NVIDIA Container Toolkit**, damit Docker die Karte überhaupt weiterreichen kann:
@@ -148,24 +169,6 @@ sudo systemctl restart docker
    `32b` ~20 GB. Passt das Modell nicht ganz hinein, lädt Ollama es teilweise — dann steht in
    `ollama ps` etwas wie `45%/55% CPU/GPU`, und die Geschwindigkeit liegt dazwischen.
 
-**AMD/ROCm** ist mit `ollama/ollama:rocm` möglich, braucht aber ein anderes Image und
-`--device /dev/kfd --device /dev/dri` statt `--gpus`. docker-code richtet das nicht selbst ein; über
-`DOCKER_CODE_OLLAMA_IMAGE` und die Umgebung lässt es sich einhängen.
-
-**macOS**: Docker Desktop reicht die Apple-GPU **nicht** in Container durch. Ein containerisiertes
-Ollama rechnet dort immer auf der CPU. Wer Metal-Beschleunigung will, betreibt Ollama nativ auf dem
-Mac und zeigt docker-code darauf — siehe [Vom Host aus](#vom-host-aus), nur andersherum:
-`DOCKER_CODE_OLLAMA_CONTAINER` bleibt ungenutzt und die Tools bekommen die Host-Adresse.
-
-### Wie docker-code entscheidet
-
-| `DOCKER_CODE_MODELS_GPU` | Wirkung |
-|---|---|
-| *ungesetzt* / `auto` | GPU nur, wenn Docker die `nvidia`-Runtime meldet — Standard |
-| `1` | `--gpus all` erzwingen, auch wenn die Erkennung nichts findet |
-| `device=0` | an eine bestimmte Karte binden (wird unverändert an `--gpus` gereicht) |
-| `0` | CPU erzwingen |
-
 Erkannt statt angenommen, weil eine GPU anzufordern, die es nicht gibt, ein **harter Startfehler**
 ist:
 
@@ -178,14 +181,173 @@ Die Erkennung sieht die Runtime, die das Container Toolkit registriert. Ein Host
 verdrahtet ist, hat keine solche Runtime — dort findet `auto` nichts und du brauchst
 `DOCKER_CODE_MODELS_GPU=1`.
 
-Nach jeder Änderung muss der Container neu gebaut werden, denn `--gpus` wird beim Start gesetzt:
+---
+
+### AMD unter Linux (ROCm)
+
+Der ganze Weg in drei Zeilen — mehr ist es nicht, wenn die Karte von ROCm unterstützt wird:
 
 ```bash
 docker-code models down
-DOCKER_CODE_MODELS_GPU=1 docker-code models up
+DOCKER_CODE_MODELS_GPU=rocm docker-code models up
+docker-code models status          # muss "computing on rocm" sagen
 ```
 
-Dauerhaft gehört die Variable in die `.bashrc`.
+`rocm` setzt **beides** auf einmal, und beides ist nötig:
+
+```
+--device /dev/kfd --device /dev/dri      die Karte in den Container
+ollama/ollama:rocm                       das Image, das die ROCm-Bibliotheken enthält
+```
+
+Das ist der Grund, warum `DOCKER_CODE_OLLAMA_IMAGE=ollama/ollama:rocm` allein nichts bringt: ohne die
+beiden Gerätedateien sieht der Container keine Karte und rechnet weiter auf der CPU — ohne Fehler,
+nur langsam. Umgekehrt genauso: Devices ohne ROCm-Image ist ebenfalls CPU.
+
+Das ROCm-Image ist ein paar GB größer als das Standard-Image; der erste `models up` dauert
+entsprechend. Wer eine bestimmte Version festnageln will, überschreibt es —
+`DOCKER_CODE_OLLAMA_IMAGE` schlägt die Automatik, die Devices bleiben trotzdem gesetzt.
+
+#### Was der Host braucht
+
+1. **Den amdgpu-Kerneltreiber mit KFD.** Beide Gerätedateien müssen existieren:
+
+   ```bash
+   ls -l /dev/kfd /dev/dri/renderD*
+   ```
+
+   Fehlt `/dev/kfd`, ist ROCm nicht ansprechbar — das ist der Normalfall in WSL2 und in VMs ohne
+   GPU-Passthrough. `lsmod | grep amdgpu` sagt, ob der Treiber überhaupt geladen ist.
+
+2. **Kein ROCm-Userspace.** Die Bibliotheken stecken im Image; auf dem Host muss nichts von AMD
+   installiert sein. (`rocm-smi` ist trotzdem praktisch, ist aber nur ein Monitoring-Werkzeug.)
+
+3. **Eine Karte, die ROCm kennt** — grob: Vega (gfx900) und alles danach. Ältere Karten (Polaris,
+   RX 5xx) laufen nicht, dort bleibt nur die CPU. Was Ollama akzeptiert, steht in seiner
+   [GPU-Doku](https://github.com/ollama/ollama/blob/main/docs/gpu.md); Karten, die knapp danebenliegen,
+   rettet `HSA_OVERRIDE_GFX_VERSION` (unten).
+
+4. **Genug VRAM**, dieselbe Faustregel wie bei NVIDIA: `7b` ~5 GB, `14b` ~9 GB, `32b` ~20 GB. Eine
+   iGPU rechnet mit dem, was ihr das BIOS als UMA-Speicher zuteilt — dort ist die kleine Variante
+   meist die einzige, die vollständig hineinpasst.
+
+#### Die Variablen
+
+Vier Knöpfe, alle für den Ollama-Container, alle wirksam beim `models up`:
+
+| Variable | Beispiel | Wirkung |
+|---|---|---|
+| `DOCKER_CODE_MODELS_GPU` | `rocm` | Devices + ROCm-Image, siehe oben |
+| `DOCKER_CODE_OLLAMA_IMAGE` | `ollama/ollama:<version>-rocm` | ein bestimmtes Image statt `:rocm` |
+| `DOCKER_CODE_OLLAMA_ENV` | `"HSA_OVERRIDE_GFX_VERSION=11.0.0"` | Umgebung **im** Ollama-Daemon, mit Leerzeichen getrennt |
+| `DOCKER_CODE_OLLAMA_ARGS` | `"--security-opt seccomp=unconfined"` | beliebige weitere `docker run`-Argumente |
+
+Ein vollständiger Block für die `.bashrc`, hier für eine RX 6700 XT:
+
+```bash
+export DOCKER_CODE_MODELS_GPU=rocm
+export DOCKER_CODE_OLLAMA_ENV="HSA_OVERRIDE_GFX_VERSION=10.3.0"
+```
+
+Danach einmal `docker-code models down && docker-code models up`, und jede Session nimmt die Karte.
+
+#### `HSA_OVERRIDE_GFX_VERSION` — der Knopf, an dem es meistens hängt
+
+ROCm bedient nur eine Liste von ISA-Versionen. Steht die eigene Karte nicht darauf, überspringt
+Ollama sie kommentarlos und rechnet auf der CPU. Der Override erzählt ROCm eine andere Version — bei
+Karten derselben Generation funktioniert das zuverlässig.
+
+Erst nachsehen, was die Karte wirklich ist:
+
+```bash
+# aus dem Log des laufenden Containers — nennt gfx-Version und die unterstützte Liste
+docker logs docker-code-ollama 2>&1 | grep -iE 'amdgpu|gfx|rocm'
+
+# oder direkt aus dem Treiber, ohne Container:
+grep -r gfx_target_version /sys/class/kfd/kfd/topology/nodes/*/properties
+#   100300 -> gfx1030 -> "10.3.0"        110000 -> gfx1100 -> "11.0.0"
+#   100301 -> gfx1031 -> "10.3.0"        110300 -> gfx1103 -> "11.0.0"
+```
+
+Die Zahl ist `major*10000 + minor*100 + step`; `100301` heißt also gfx1031. Der Override wird in
+derselben Zerlegung geschrieben (`10.3.0`), aber mit der ISA der **unterstützten** Nachbarkarte, nicht
+mit der eigenen — gfx1031 gibt sich als gfx1030 aus. Übliche Fälle:
+
+| Karte | ISA | `HSA_OVERRIDE_GFX_VERSION` |
+|---|---|---|
+| RX 7900 XTX / XT / GRE | gfx1100 | nicht nötig |
+| RX 7800 XT / 7700 XT | gfx1101 | meist nicht nötig, sonst `11.0.0` |
+| RX 7600 (XT) | gfx1102 | `11.0.0` |
+| RX 6800 / 6900 / 6950 XT | gfx1030 | nicht nötig |
+| RX 6700 (XT) / 6750 XT | gfx1031 | `10.3.0` |
+| RX 6600 (XT) / 6650 XT | gfx1032 | `10.3.0` |
+| RX 6500 XT / 6400 | gfx1034 | `10.3.0` |
+| Radeon 780M / 760M (iGPU) | gfx1103 | `11.0.0` |
+| RX 5700 (XT) | gfx1010 | `10.3.0`, funktioniert nicht immer |
+| Vega 56/64, Radeon VII, MI-Karten | gfx900/906 | nicht nötig |
+
+#### Mehrere Karten, iGPU im Weg, rootless Docker
+
+```bash
+# nur die zweite Karte benutzen (der NVIDIA-Weg "device=0" gilt hier nicht):
+export DOCKER_CODE_OLLAMA_ENV="HIP_VISIBLE_DEVICES=1"
+
+# typischer Ryzen-Desktop: die iGPU meldet sich als Karte 0 und ist zu schwach —
+# dGPU festnageln und gleich die passende ISA mitgeben:
+export DOCKER_CODE_OLLAMA_ENV="HIP_VISIBLE_DEVICES=1 HSA_OVERRIDE_GFX_VERSION=11.0.0"
+
+# rootless Docker: root im Container ist kein root auf dem Host, also müssen die
+# Gruppen der Gerätedateien mit hinein:
+export DOCKER_CODE_OLLAMA_ARGS="--group-add $(getent group render | cut -d: -f3) --group-add $(getent group video | cut -d: -f3)"
+
+# ältere Kernel/Docker-Kombinationen, bei denen ROCm am seccomp-Profil scheitert:
+export DOCKER_CODE_OLLAMA_ARGS="--security-opt seccomp=unconfined"
+```
+
+#### Prüfen, Schritt für Schritt
+
+```bash
+# 1. Sieht der Host die Karte?
+ls -l /dev/kfd /dev/dri
+
+# 2. Kann Docker die Gerätedateien durchreichen?
+docker run --rm --device /dev/kfd --device /dev/dri alpine ls -l /dev/kfd
+
+# 3. Sieht der Ollama-Container sie?
+docker exec docker-code-ollama ls -l /dev/kfd
+
+# 4. Worauf hat Ollama sich beim Start festgelegt?
+docker logs docker-code-ollama 2>&1 | grep "inference compute"
+#   library=rocm -> GPU        library=cpu -> CPU
+```
+
+Auslastung live, ohne dass `rocm-smi` installiert sein muss:
+
+```bash
+watch -n 1 'cat /sys/class/drm/card*/device/gpu_busy_percent'
+```
+
+#### Wenn es nicht greift
+
+| Beobachtung | Ursache |
+|---|---|
+| `docker run` bricht mit `error gathering device information ... /dev/kfd` ab | die Gerätedatei gibt es nicht — amdgpu nicht geladen, Kernel ohne KFD, WSL2 oder VM ohne Passthrough |
+| Log: `amdgpu is not supported` mit einer Liste `supported types` | die ISA der Karte steht nicht drauf → `HSA_OVERRIDE_GFX_VERSION` aus der Tabelle |
+| `models status` zeigt `/dev/kfd`, aber `computing on cpu` | Standard-Image statt `:rocm`. Die `IMAGE`-Spalte von `models status` sagt, was tatsächlich läuft |
+| `Permission denied` auf `/dev/kfd` | rootless Docker → `--group-add` wie oben |
+| die iGPU antwortet statt der dGPU | `HIP_VISIBLE_DEVICES=<index>` |
+| hängt oder stürzt unter Last ab | meist zu alter Kernel bzw. amdgpu-Firmware; zum Eingrenzen ein kleines Modell (`0.5b`) versuchen |
+
+### macOS und Windows
+
+**macOS**: Docker Desktop reicht die Apple-GPU **nicht** in Container durch. Ein containerisiertes
+Ollama rechnet dort immer auf der CPU. Wer Metal-Beschleunigung will, betreibt Ollama nativ auf dem
+Mac und zeigt docker-code darauf — siehe [Vom Host aus](#vom-host-aus), nur andersherum:
+`DOCKER_CODE_OLLAMA_CONTAINER` bleibt ungenutzt und die Tools bekommen die Host-Adresse.
+
+**WSL2**: NVIDIA funktioniert dort, AMD in aller Regel nicht — es gibt kein `/dev/kfd`, und der
+Windows-Weg über `/dev/dxg` wird von diesem Image nicht bedient. Bleibt: Ollama nativ unter Windows
+betreiben und die Tools dorthin zeigen.
 
 ### Testen, ob die GPU wirklich benutzt wird
 
@@ -200,12 +362,18 @@ gpu:      requested at start (--gpus)
 ollama:   computing on cuda (NVIDIA-GeForce-RTX-4080)
 ```
 
-Steht dort stattdessen `not requested` oder `computing on cpu`, läuft es auf der CPU. Die beiden
-Zeilen sind absichtlich getrennt: ein Container *kann* mit `--gpus` gestartet worden sein und Ollama
-trotzdem auf der CPU rechnen — etwa wenn der Treiber zu alt ist. Dann steht da `requested at start`
-und `computing on cpu`, und das ist genau die Diagnose.
+```
+gpu:      requested at start (--device /dev/kfd, the AMD/ROCm path)
+ollama:   computing on rocm (AMD-Radeon-RX-7900-XTX)
+```
 
-Wenn du es genauer wissen willst, von außen nach innen:
+Steht dort stattdessen `not requested` oder `computing on cpu`, läuft es auf der CPU. Die beiden
+Zeilen sind absichtlich getrennt: ein Container *kann* mit der Karte gestartet worden sein und Ollama
+trotzdem auf der CPU rechnen — zu alter Treiber, falsches Image, nicht unterstützte ISA. Dann steht
+da `requested at start` und `computing on cpu`, und das ist genau die Diagnose.
+
+Wenn du es genauer wissen willst, von außen nach innen — hier für NVIDIA, die AMD-Variante steht
+[eine Sektion weiter oben](#prüfen-schritt-für-schritt):
 
 ```bash
 # 1. Sieht der Host die Karte?
@@ -242,17 +410,18 @@ leer — Ollama entlädt nach einigen Minuten Leerlauf.
 Beim Zusehen in Echtzeit:
 
 ```bash
-watch -n 1 nvidia-smi          # Auslastung und VRAM während einer Anfrage
+watch -n 1 nvidia-smi                                        # NVIDIA
+watch -n 1 'cat /sys/class/drm/card*/device/gpu_busy_percent' # AMD, ohne rocm-smi
 ```
 
 ### Wenn die GPU nicht benutzt wird
 
 | Beobachtung | Ursache |
 |---|---|
-| `models status` sagt `not requested` | die Erkennung fand keine `nvidia`-Runtime → `DOCKER_CODE_MODELS_GPU=1` und `models down && models up` |
+| `models status` sagt `not requested` | die Erkennung fand keine `nvidia`-Runtime → `DOCKER_CODE_MODELS_GPU=1` (NVIDIA) bzw. `=rocm` (AMD), dann `models down && models up` |
 | Schritt 2 oben scheitert | Container Toolkit fehlt oder Docker wurde nach `nvidia-ctk` nicht neu gestartet |
 | Schritt 3 scheitert, Schritt 2 klappt | der Container lief schon vor der Änderung — `docker-code models down && docker-code models up` |
-| `requested at start`, aber `computing on cpu` | Treiber zu alt für die CUDA-Version im Image; `docker logs docker-code-ollama` nennt den Grund |
+| `requested at start`, aber `computing on cpu` | NVIDIA: Treiber zu alt für die CUDA-Version im Image. AMD: siehe die [AMD-Tabelle](#wenn-es-nicht-greift) — meist Image oder ISA. `docker logs docker-code-ollama` nennt den Grund |
 | `PROCESSOR` zeigt eine Aufteilung | Modell passt nicht ins VRAM → kleinere Variante (`7b`) oder stärkere Quantisierung |
 
 ---
@@ -437,9 +606,11 @@ Zwei Container auf einem eigenen Netz `docker-code-net`:
 | `docker-code-ollama` | `ollama/ollama` | hält die Gewichte, serviert OpenAI-, Anthropic- und Responses-Format |
 | `docker-code-litellm` | `ghcr.io/berriai/litellm:main-stable` | übersetzt in Formate, die Ollama nicht selbst spricht |
 
-Eine GPU wird benutzt, wenn Docker eine gemeldet hat (`--gpus all`), sonst läuft es auf der CPU. Das
-wird erkannt, nicht angenommen: eine GPU anzufordern, die es nicht gibt, ist ein harter
-`docker run`-Fehler. Erzwingen lässt sich CPU-Betrieb mit `DOCKER_CODE_MODELS_GPU=0`.
+Eine NVIDIA-Karte wird benutzt, wenn Docker eine gemeldet hat (`--gpus all`), sonst läuft es auf der
+CPU. Das wird erkannt, nicht angenommen: eine GPU anzufordern, die es nicht gibt, ist ein harter
+`docker run`-Fehler. Eine AMD-Karte wird **nicht** automatisch genommen, weil sie ein zweites, deutlich
+größeres Image bedeutet — `DOCKER_CODE_MODELS_GPU=rocm` sagt ja dazu, und dann steht in der Tabelle
+oben `ollama/ollama:rocm`. Erzwingen lässt sich CPU-Betrieb mit `DOCKER_CODE_MODELS_GPU=0`.
 
 Die Gateway-Konfiguration liegt in `~/docker-code/models/litellm/config.yaml`, wird beim ersten Start
 geschrieben und danach **nie wieder angefasst**. Sie enthält einen Wildcard-Eintrag:

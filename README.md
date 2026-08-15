@@ -170,6 +170,11 @@ zusammen mit den URLs an. Alles Weitere in [LOCAL-MODELS.md](LOCAL-MODELS.md).
 Lokale Modelle können: Claude Code, Codex, Qwen, OpenCode und Gemini CLI. Cursor und Copilot rechnen
 serverseitig beim Anbieter und sagen das, wenn man es versucht.
 
+Auf der **GPU** statt auf der CPU: NVIDIA wird erkannt, AMD ist eine Zeile —
+`DOCKER_CODE_MODELS_GPU=rocm` reicht die Karte durch *und* nimmt das ROCm-Image. Beides, samt
+`HSA_OVERRIDE_GFX_VERSION` für Karten, die ROCm nicht von selbst kennt, steht unter
+[GPU](LOCAL-MODELS.md#gpu).
+
 ---
 
 ## Weiteres
