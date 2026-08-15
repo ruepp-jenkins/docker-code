@@ -116,6 +116,12 @@ pipeline {
                     url: 'https://registry.npmjs.org/@github/copilot/latest',
                     contentTypes: [JsonContent([JsonContentEntry(jsonPath: '$.version')])]
                 ),
+                // Mistral Vibe is the one agent that comes from PyPI rather than npm, so its
+                // trigger reads a different URL shape — the version sits under .info.version.
+                URLTriggerEntry(
+                    url: 'https://pypi.org/pypi/mistral-vibe/json',
+                    contentTypes: [JsonContent([JsonContentEntry(jsonPath: '$.info.version')])]
+                ),
                 // The only image the build pulls: `ubuntu:24.04` backs both the runtime stage and
                 // the test stage. The tag has to track base/Dockerfile's UBUNTU_TAG. The digest is
                 // the manifest list's, so it moves whenever any published architecture is rebuilt —

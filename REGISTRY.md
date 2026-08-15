@@ -3,7 +3,7 @@
 ## Die Namen
 
 Ein Repository pro Image, nicht ein Repository mit agent-präfixierten Tags — eine Tag-Liste, in der
-sieben Tools ineinander verschachtelt sind, liest niemand.
+acht Tools ineinander verschachtelt sind, liest niemand.
 
 ```
 ruepp/docker-code-base        die gemeinsame Schicht
@@ -47,12 +47,12 @@ Prepare  →  Base (amd64 ‖ arm64)  →  Base manifest  →  Agents (7 × 2)  
 
 Das Basis-Manifest muss fertig sein, bevor ein Agent baut: die Agent-Dockerfiles lösen ihre Basis
 über einen Tag auf, und geschrieben wird der eben nur dort. Auf einem Branch zeigen sie auf die Basis
-**dieses Branches** — eine Änderung an der Basis wird also von allen sieben Agents getestet, bevor
+**dieses Branches** — eine Änderung an der Basis wird also von allen acht Agents getestet, bevor
 irgendetwas auf `master` landet.
 
 Die Test-Suite läuft genau einmal, in der `test`-Stage von `base/Dockerfile`. `verified` verweigert
 das Image, wenn sie rot war, und jedes Agent-Image kopiert diesen Stempel — ein roter Test blockiert
-also alle sieben.
+also alle acht.
 
 ---
 
@@ -93,7 +93,7 @@ docker-code registry start|stop|status
 - Der Zustand steht auf Container-Labels (Upstream, Store) und wird bei jedem Start verglichen. Passt
   etwas nicht, wird der Container neu gebaut — der Cache-Inhalt bleibt, weil ein Blob über seinen
   Digest adressiert ist und für jeden gültig bleibt, der das Verzeichnis wieder aufgreift.
-- Der Letzte macht das Licht aus: Sessions werden über ihr Label gezählt, **über alle sieben Agents
+- Der Letzte macht das Licht aus: Sessions werden über ihr Label gezählt, **über alle acht Agents
   hinweg**. Eine laufende Claude-Session hält den Mirror also für die Codex-Session am Leben, die
   gerade startet.
 - Jeder Fehler ist eine Warnung und eine Session ohne Mirror. Ein Cache ist weniger wert als die

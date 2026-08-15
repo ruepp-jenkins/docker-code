@@ -1,6 +1,6 @@
 # docker-code
 
-Sieben TUI-Coding-Agents, jeder in seinem eigenen Container, jeder mit seinem eigenen persistenten
+Acht TUI-Coding-Agents, jeder in seinem eigenen Container, jeder mit seinem eigenen persistenten
 Verzeichnis — und ein gemeinsamer Speicher für lokale Modelle, den sie sich alle teilen.
 
 | Aufruf | Tool | Lokale Modelle |
@@ -9,9 +9,14 @@ Verzeichnis — und ein gemeinsamer Speicher für lokale Modelle, den sie sich a
 | `codex-docker` | [OpenAI Codex CLI](https://github.com/openai/codex) | ja, über Ollama |
 | `gemini-docker` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ja, über das LiteLLM-Gateway |
 | `qwen-docker` | [Qwen Code](https://github.com/QwenLM/qwen-code) | ja, über Ollama |
+| `mistral-docker` | [Mistral Vibe](https://github.com/mistralai/mistral-vibe) | ja, über Ollama |
 | `opencode-docker` | [OpenCode](https://opencode.ai) | ja, über Ollama |
 | `cursor-agent-docker` | [Cursor CLI](https://cursor.com/docs/cli/overview) | nein (Cloud-only) |
 | `copilot-docker` | [GitHub Copilot CLI](https://github.com/github/copilot-cli) | nein (Cloud-only) |
+
+Mistrals Terminal-Agent heißt **Vibe**, nicht „Mistral Code" — Letzteres ist das IDE-Plugin für
+VS Code und JetBrains und läuft nicht im Terminal. Der Wrapper heißt `mistral-docker`, damit er bei
+den anderen Anbietern steht; `vibe-docker` tut dasselbe.
 
 Der Suffix `-docker` ist Absicht: `claude` bleibt `claude`, `gemini` bleibt `gemini`. Nichts, was du
 heute installiert hast, wird verdeckt.
@@ -44,7 +49,7 @@ Ein einziges Verzeichnis, `~/docker-code`:
 ~/docker-code/
 ├── claude/      ← das komplette HOME des claude-Containers
 ├── codex/       ← das komplette HOME des codex-Containers
-├── gemini/  qwen/  opencode/  cursor/  copilot/
+├── gemini/  qwen/  mistral/  opencode/  cursor/  copilot/
 ├── shared/      optional, in jedem Agent unter ~/shared
 ├── models/      die Gewichte, die sich alle teilen
 │   ├── ollama/  gguf/  hf/  litellm/
@@ -242,7 +247,7 @@ bats tests/            # die ganze Suite, ohne Docker-Daemon
 ```
 
 Die Suite läuft in der `test`-Stage von `base/Dockerfile`, und `verified` verweigert das Image, wenn
-sie rot ist. Jedes Agent-Image kopiert diesen Stempel — ein roter Test blockiert also alle sieben,
+sie rot ist. Jedes Agent-Image kopiert diesen Stempel — ein roter Test blockiert also alle acht,
 nicht nur den, dessen Dockerfile gerade angefasst wurde.
 
 Möglich ist das durch die Dry-Run-Naht: alles, was `bin/docker-code` vor dem Start tut, ist reine

@@ -1,7 +1,7 @@
 # Lokale Modelle
 
-Ein Modellspeicher für alle Agents. Sieben Tools, die jeweils ihre eigene Kopie eines 9-GB-Modells
-halten, wären 63 GB derselben Bytes — hier liegt es einmal unter `~/docker-code/models/`, und jeder
+Ein Modellspeicher für alle Agents. Acht Tools, die jeweils ihre eigene Kopie eines 9-GB-Modells
+halten, wären 72 GB derselben Bytes — hier liegt es einmal unter `~/docker-code/models/`, und jeder
 Container spricht denselben Daemon an.
 
 Alle Beispiele auf dieser Seite verwenden **`qwen2.5-coder:14b`** (~9 GB, passt auf eine 16-GB-Karte)
@@ -48,7 +48,8 @@ Der erste Pull lädt ~9 GB. Danach, im Projektverzeichnis:
 export DOCKER_CODE_LOCAL=1
 export DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b
 
-qwen-docker          # oder codex-docker, gemini-docker, claude-docker, opencode-docker
+qwen-docker          # oder codex-docker, gemini-docker, claude-docker,
+                     # mistral-docker, opencode-docker
 ```
 
 Damit ist **nichts von Hand zu konfigurieren** — URL, Key und Modellname setzt der Wrapper. Nachsehen,
@@ -68,7 +69,7 @@ Zwei verschiedene Aufgaben, und der Unterschied entscheidet, ob eine Session fun
   darin.
 - **Als Agent arbeiten** — Dateien lesen, Kommandos ausführen, Ergebnisse verwerten. Dafür muss das
   Modell **Tool-Calls** beherrschen: Der Agent schickt seine Werkzeuge im Feld `tools` mit und
-  erwartet die Antwort in `tool_calls`. Alle sieben Tools hier arbeiten so.
+  erwartet die Antwort in `tool_calls`. Alle acht Tools hier arbeiten so.
 
 Ein Modell ohne dieses Training schreibt den Funktionsaufruf als Text in die Antwort, der Agent kann
 ihn nicht ausführen und zeigt rohes JSON an. **`qwen2.5-coder` gehört in diese Gruppe** — es ist ein
@@ -628,6 +629,44 @@ Deshalb zeigt der Wrapper zusätzlich `GEMINI_CLI_SYSTEM_SETTINGS_PATH` auf eine
 
 ```json
 { "security": { "auth": { "selectedType": "gemini-api-key" } } }
+```
+
+### Mistral Vibe
+
+```bash
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b mistral-docker
+```
+
+Vibe kennt beliebige OpenAI-kompatible Provider — einer für llama.cpp ist ab Werk eingebaut. Der
+Wrapper legt für die Dauer der Session einen Provider `dockercode` an; dauerhaft gehört er in
+`~/docker-code/mistral/.vibe/config.toml`:
+
+```toml
+active_model = "qwen2.5-coder:14b"
+
+[[providers]]
+name = "dockercode"
+api_base = "http://localhost:11434/v1"
+api_key_env_var = "MISTRAL_API_KEY"
+api_style = "openai"
+
+[[models]]
+name = "qwen2.5-coder:14b"
+provider = "dockercode"
+```
+
+`active_model` steht **vor** den Tabellen — sonst zieht TOML den Schlüssel in die letzte Tabelle.
+Provider- und Modell-Listen werden über den Namen zusammengeführt, nicht ersetzt: Mistrals eigener
+Provider bleibt daneben bestehen, du wechselst mit `active_model` zwischen lokal und Cloud.
+
+Jedes Feld der Konfiguration lässt sich auch als Umgebungsvariable setzen — Präfix `VIBE_`, für
+Listen als JSON. Genau das tut der Wrapper:
+
+```
+VIBE_PROVIDERS=[{"name":"dockercode","api_base":"http://localhost:11434/v1","api_key_env_var":"MISTRAL_API_KEY","api_style":"openai"}]
+VIBE_MODELS=[{"name":"qwen2.5-coder:14b","provider":"dockercode"}]
+VIBE_ACTIVE_MODEL=qwen2.5-coder:14b
+MISTRAL_API_KEY=docker-code-local
 ```
 
 ### OpenCode
