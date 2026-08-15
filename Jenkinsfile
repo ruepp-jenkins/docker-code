@@ -11,19 +11,30 @@ properties(
     ]
 )
 
-def GIT_URL = 'git@github.com:ruepp-jenkins/docker-code.git'
-def GIT_CREDENTIALS = 'github.com-ssh'
-
+// `checkout scm` rather than a `git` step with a URL and a credentials id spelled out here.
+//
+// Two reasons. The job already knows both — it found this file by cloning the repository — so
+// repeating them is a second copy that can disagree with the first, and it disagreed: an SSH remote
+// and an ssh credentials id, on a job whose branch indexing authenticates as a GitHub App over
+// HTTPS. And `scm` carries the exact revision that produced this Jenkinsfile, so every agent checks
+// out the same commit even if the branch moves mid-build.
+//
+// Note also that there are no `def` constants at the top of this file. In a Declarative pipeline a
+// top-level `def` is a local of the script's own run method, invisible to the methods below — the
+// reference simply fails at runtime with MissingPropertyException. tests/pipeline.bats asserts that
+// none come back.
 def checkoutRepo() {
-    git branch: env.BRANCH_NAME, url: GIT_URL, credentialsId: GIT_CREDENTIALS
+    checkout scm
     sh 'chmod +x scripts/*.sh'
 }
 
 // One image, one architecture. Identical for the base and for every agent, so it lives in one place;
 // the post blocks below cannot move here — junit and cleanWs are stage directives, not steps.
+//
+// The caller checks the repository out, not this function: a stage that builds seven images does it
+// once rather than seven times into the same workspace.
 def buildImage(String agentId, String arch, String platform) {
     withEnv(["AGENT_ID=${agentId}", "EXPECTED_PLATFORM=${platform}", "TEST_REPORT_SUFFIX=${arch}"]) {
-        checkoutRepo()
         sh './scripts/start.sh'
 
         // The image was pushed without a tag, so its digest is the only handle on it — and it is on
@@ -157,7 +168,10 @@ pipeline {
             parallel {
                 stage('base amd64') {
                     agent { label 'docker' }
-                    steps { buildImage('base', 'amd64', 'linux/amd64') }
+                    steps {
+                        checkoutRepo()
+                        buildImage('base', 'amd64', 'linux/amd64')
+                    }
                     post {
                         always {
                             // 'always', so the report is published even when the build fails — which
@@ -168,18 +182,23 @@ pipeline {
                             junit testResults: 'test-results/*.junit.xml',
                                   allowEmptyResults: false,
                                   keepProperties: true
+                            sh './scripts/docker_cleanup.sh'
                             cleanWs()
                         }
                     }
                 }
                 stage('base arm64') {
                     agent { label 'oracle_docker' }
-                    steps { buildImage('base', 'arm64', 'linux/arm64') }
+                    steps {
+                        checkoutRepo()
+                        buildImage('base', 'arm64', 'linux/arm64')
+                    }
                     post {
                         always {
                             junit testResults: 'test-results/*.junit.xml',
                                   allowEmptyResults: false,
                                   keepProperties: true
+                            sh './scripts/docker_cleanup.sh'
                             cleanWs()
                         }
                     }
@@ -203,34 +222,54 @@ pipeline {
         }
 
         stage('Agents') {
-            // Generated from env.AGENT_IDS rather than written out seven times. `agent none` on the
-            // stage, with each branch claiming its own node, is what lets a runtime-built map of
-            // branches run on two different machines.
-            agent none
-            steps {
-                script {
-                    def branches = [:]
-                    env.AGENT_IDS.split(' ').findAll { it }.each { id ->
-                        branches["${id} amd64"] = {
-                            node('docker') {
-                                try {
-                                    buildImage(id, 'amd64', 'linux/amd64')
-                                } finally {
-                                    cleanWs()
-                                }
-                            }
-                        }
-                        branches["${id} arm64"] = {
-                            node('oracle_docker') {
-                                try {
-                                    buildImage(id, 'arm64', 'linux/arm64')
-                                } finally {
-                                    cleanWs()
-                                }
+            // Parallel across architectures, sequential across agents — deliberately not one branch
+            // per agent.
+            //
+            // Everything below the Jenkins workspace is shared per machine: one Docker daemon, one
+            // buildx builder named `mybuilder`, one build cache. Seven branches landing on the same
+            // node would each create and then remove that builder underneath the others, and
+            // docker_cleanup.sh would prune a cache the neighbours are still reading. Two branches,
+            // each looping over the agents, keep the whole tool matrix on two machines with nothing
+            // shared between concurrent builds.
+            //
+            // The cost is wall-clock time, and it is small: every agent image is a thin layer on a
+            // base that is already built and pushed.
+            //
+            // The loop is generated from env.AGENT_IDS, so adding a tool needs no change here.
+            parallel {
+                stage('agents amd64') {
+                    agent { label 'docker' }
+                    steps {
+                        checkoutRepo()
+                        script {
+                            env.AGENT_IDS.split(' ').findAll { it }.each { id ->
+                                buildImage(id, 'amd64', 'linux/amd64')
                             }
                         }
                     }
-                    parallel branches
+                    post {
+                        always {
+                            sh './scripts/docker_cleanup.sh'
+                            cleanWs()
+                        }
+                    }
+                }
+                stage('agents arm64') {
+                    agent { label 'oracle_docker' }
+                    steps {
+                        checkoutRepo()
+                        script {
+                            env.AGENT_IDS.split(' ').findAll { it }.each { id ->
+                                buildImage(id, 'arm64', 'linux/arm64')
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            sh './scripts/docker_cleanup.sh'
+                            cleanWs()
+                        }
+                    }
                 }
             }
         }

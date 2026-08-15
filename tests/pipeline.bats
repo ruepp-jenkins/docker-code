@@ -9,6 +9,52 @@ load helper
 
 JENKINSFILE="${BATS_TEST_DIRNAME}/../Jenkinsfile"
 
+@test "no top-level def constants, which the pipeline's own methods cannot see" {
+    # In a Declarative pipeline a top-level `def x = ...` is a local of the script's run method, not
+    # a binding property, so a method defined in the same file cannot read it — the reference fails
+    # at runtime with MissingPropertyException, after the agent has already been claimed and the
+    # repository cloned. Methods (`def name(...) {`) are fine; assignments are not.
+    offenders="$(grep -nE '^def +[A-Za-z_]+ *=' "${JENKINSFILE}" || true)"
+    [ -z "${offenders}" ] || {
+        echo "top-level def assignments are invisible to the methods below:"
+        echo "${offenders}"
+        return 1
+    }
+}
+
+@test "the checkout uses the job's own SCM rather than a second copy of the remote" {
+    # The job found this file by cloning the repository, so it already knows the URL, the credentials
+    # and the revision. Spelling them out again is a copy that can disagree with the first — and did.
+    grep -q 'checkout scm' "${JENKINSFILE}"
+    ! grep -qE "^\s*git .*(url:|credentialsId:)" "${JENKINSFILE}"
+}
+
+@test "every stage that runs a script checks the repository out first" {
+    # cleanWs() in a post block wipes the workspace, so a later stage on the same agent starts empty.
+    # A stage that runs ./scripts/... without a checkout fails with "no such file".
+    checkouts="$(grep -c 'checkoutRepo()' "${JENKINSFILE}")"
+    runners="$(grep -cE "sh '\./scripts/" "${JENKINSFILE}")"
+    [ "${checkouts}" -gt "${runners}" ] || {
+        echo "found ${runners} script invocations but only ${checkouts} checkoutRepo() calls"
+        return 1
+    }
+}
+
+@test "agent builds are sequential per node, because the builder and cache are shared per machine" {
+    # One branch per agent would put seven builds on one node, each creating and then removing the
+    # shared `mybuilder` underneath the others. Parallel across architectures only.
+    grep -q "stage('agents amd64')" "${JENKINSFILE}"
+    grep -q "stage('agents arm64')" "${JENKINSFILE}"
+    ! grep -qE "node\('(docker|oracle_docker)'\)" "${JENKINSFILE}"
+}
+
+@test "cleanup runs once per stage, not once per image" {
+    # docker_cleanup.sh removes the builder and prunes the cache; between two agents in the same
+    # loop that would discard exactly the layers the next one reuses.
+    ! grep -q 'docker_cleanup.sh' "${REPO_ROOT}/scripts/start.sh"
+    grep -q "sh './scripts/docker_cleanup.sh'" "${JENKINSFILE}"
+}
+
 @test "the agent list in CI is read from the directories, not written out by hand" {
     # This is what keeps "add a folder under agents/" true all the way through the pipeline.
     grep -q 'AGENT_IDS' "${JENKINSFILE}"

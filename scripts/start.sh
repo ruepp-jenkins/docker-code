@@ -69,5 +69,9 @@ esac
 printf '%s\n' "${DIGEST}" > "${DIGEST_FILE}"
 echo "Pushed ${IMAGE_REPO}@${DIGEST} (${HOST_PLATFORM}, untagged)"
 
-# cleanup
-scripts/docker_cleanup.sh
+# No cleanup here.
+#
+# A stage builds every agent in turn, and docker_cleanup.sh removes the shared buildx builder and
+# prunes the build cache — doing that after each image would throw away the layers the next agent in
+# the loop is about to reuse, and remove the builder out from under it. The Jenkinsfile calls it once
+# per stage instead, from a post block that runs even when a build failed.
