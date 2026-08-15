@@ -44,16 +44,49 @@ build_base() {
         .
 }
 
+# What an agent image should actually build FROM.
+#
+# Not `…-base:latest` directly. BuildKit caches how it resolved a FROM reference, and a tag that was
+# rebuilt locally keeps resolving to the image it pointed at the first time — so an agent silently
+# comes out on last week's base, with last week's entrypoint scripts in it. That is not a theoretical
+# failure: it produced an agent image whose firewall script was three versions old while `base:latest`
+# in the same daemon was current.
+#
+# A tag derived from the base's image id has no such history: it is new whenever the base changed,
+# and identical whenever it did not, so the cache still works for repeated builds.
+base_ref() {
+    local id
+    id="$(docker image inspect -f '{{.Id}}' "${BASE_IMAGE}" 2>/dev/null)" ||
+        die "the base image ${BASE_IMAGE} is missing; run: scripts/build.sh base"
+    id="${id#sha256:}"
+    printf '%s/%s-base:build-%s\n' "${NAMESPACE}" "${PREFIX}" "$(printf '%s' "${id}" | cut -c1-12)"
+}
+
 build_agent() {
-    local id="$1" image
+    local id="$1" image from
     agent_load "${id}" || exit 1
     image="${NAMESPACE}/${PREFIX}-${id}:${TAG}"
 
-    log "${id}  ->  ${image}"
+    from="$(base_ref)"
+    docker tag "${BASE_IMAGE}" "${from}"
+
+    # A second *name* for the same image — no copy, no layers, no extra disk. But names accumulate,
+    # and a stale one keeps a superseded base image from ever being collected, so the previous ones
+    # go. Only the tag is removed; `…-base:latest` still names the current base, and any image left
+    # without a name is dangling for the user's own `docker image prune` to deal with.
+    docker images "${NAMESPACE}/${PREFIX}-base" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null |
+        grep ':build-' | grep -vxF "${from}" |
+        while IFS= read -r stale; do
+            if [ -n "${stale}" ]; then
+                docker rmi "${stale}" >/dev/null 2>&1 || true
+            fi
+        done
+
+    log "${id}  ->  ${image}   (FROM ${from})"
     docker buildx build \
         --builder "${BUILDER}" \
         --file "agents/${id}/Dockerfile" \
-        --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+        --build-arg "BASE_IMAGE=${from}" \
         --tag "${image}" \
         --load \
         .

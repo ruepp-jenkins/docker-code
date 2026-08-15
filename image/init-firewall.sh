@@ -73,29 +73,69 @@ add_ip() {
     esac
 }
 
+# Two resolvers, not one.
+#
+# dig talks to the nameserver in resolv.conf itself; getent goes through glibc. They fail
+# independently — a container whose every dig timed out while curl kept working is a real report,
+# and with only dig in the picture that session ends with an empty allowlist and a dead firewall.
+# Whichever answers first is good enough for an ipset.
 resolve_into_set() {
     local domain="$1" ips ip count=0
-    ips="$(dig +short +time=3 +tries=2 A "${domain}" 2>/dev/null || true)"
+
+    # grep for addresses rather than taking dig's output as-is: `dig +short` reports its own failures
+    # on *stdout*, not stderr —
+    #     ;; communications error to 10.0.0.1#53: timed out
+    #     ;; no servers could be reached
+    # — so a plain emptiness check sees "output" and never reaches the fallback below. Filtering also
+    # drops the CNAME lines dig mixes in with the A records.
+    ips="$(dig +short +time=3 +tries=2 A "${domain}" 2>/dev/null |
+        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+    if [ -z "${ips}" ]; then
+        ips="$(getent ahostsv4 "${domain}" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+    fi
+
     # shellcheck disable=SC2086  # one address per line is exactly what should be split here
     for ip in ${ips}; do
         if add_ip "${ip}"; then
             count=$((count + 1))
         fi
     done
+
     if [ "${count}" -eq 0 ]; then
-        # Not fatal. A single unresolvable domain should degrade that one service, not leave the
-        # container with no firewall at all.
+        # Not fatal on its own. A single unresolvable domain should degrade that one service, not
+        # leave the container with no firewall at all — but see the check after the loop below.
         log "WARNING: could not resolve ${domain}"
+        return 1
     fi
+    return 0
 }
 
+agent_resolved=0
 # shellcheck disable=SC2086  # a space-separated list from agent.env is the documented format
 for domain in ${AGENT_DOMAINS}; do
-    resolve_into_set "${domain}"
+    if resolve_into_set "${domain}"; then
+        agent_resolved=$((agent_resolved + 1))
+    fi
 done
 
+# Not one of the agent's own hosts could be resolved. That is not "one service degraded", it is a
+# broken resolver — and carrying on would install a default-deny policy around an allowlist that
+# cannot contain the one API this agent needs. The session would come up unable to reach anything
+# and die at the verification below, several confusing steps later.
+#
+# Stopping here instead leaves the container's network exactly as it was: no policy has been
+# changed yet, and the message names the actual problem.
+if [ -n "${AGENT_DOMAINS}" ] && [ "${agent_resolved}" -eq 0 ]; then
+    log "not one of ${AGENT_ID:-this agent}'s domains could be resolved, so the allowlist would be"
+    log "empty. This is a DNS failure inside the container, not a firewall decision — nothing has"
+    log "been changed. Check with:"
+    log "    DOCKER_CODE_SHELL=1 ${AGENT_ID:-<agent>}-docker -c 'cat /etc/resolv.conf; getent hosts ${AGENT_DOMAINS%% *}'"
+    log "Start with DOCKER_CODE_NET=full to run without the allowlist."
+    die "refusing to install a default-deny firewall with an empty allowlist"
+fi
+
 for domain in "${COMMON_DOMAINS[@]}"; do
-    resolve_into_set "${domain}"
+    resolve_into_set "${domain}" || true
 done
 
 case "${DOCKER_CODE_DIND:-0}" in
@@ -104,7 +144,7 @@ case "${DOCKER_CODE_DIND:-0}" in
     *)
         log "inner Docker is on, so the image registries are allowed as well"
         for domain in "${REGISTRY_DOMAINS[@]}"; do
-            resolve_into_set "${domain}"
+            resolve_into_set "${domain}" || true
         done
         ;;
 esac
@@ -116,8 +156,8 @@ if [ -n "${DOCKER_CODE_ALLOW_DOMAINS:-}" ]; then
     for domain in ${DOCKER_CODE_ALLOW_DOMAINS//,/ }; do
         log "allowing extra domain ${domain}"
         case "${domain}" in
-            [0-9]*.[0-9]*.[0-9]*.[0-9]*) add_ip "${domain}" ;;
-            *) resolve_into_set "${domain}" ;;
+            [0-9]*.[0-9]*.[0-9]*.[0-9]*) add_ip "${domain}" || true ;;
+            *) resolve_into_set "${domain}" || true ;;
         esac
     done
 fi
@@ -210,6 +250,17 @@ fi
 probe="${AGENT_DOMAINS%% *}"
 if [ -n "${probe}" ]; then
     if ! curl -sS --max-time 10 -o /dev/null "https://${probe}/" 2>/dev/null; then
+        # The policy is already DROP at this point, so the container is going to be torn down. Say
+        # what to do about it rather than only what went wrong: this is the one failure a user meets
+        # while their session refuses to start.
+        log "the allowlist is in place but ${probe} does not answer through it."
+        log "Usually one of:"
+        log "  - the address moved since it was resolved a moment ago (CDN, short TTL)"
+        log "  - the host needs more names than agents/${AGENT_ID:-<id>}/agent.env lists"
+        log "  - egress here goes through a proxy that is not in the allowlist"
+        log "Add what is missing and try again:"
+        log "    DOCKER_CODE_ALLOW_DOMAINS=\"host.example,proxy.example\" ${AGENT_ID:-<agent>}-docker"
+        log "Or run without the allowlist: DOCKER_CODE_NET=full ${AGENT_ID:-<agent>}-docker"
         die "verification failed: ${probe} is unreachable, ${AGENT_ID:-this agent} cannot work"
     fi
     log "egress restricted; ${probe} reachable, example.com blocked"

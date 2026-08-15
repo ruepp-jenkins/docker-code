@@ -91,6 +91,28 @@ FIREWALL="${BATS_TEST_DIRNAME}/../image/init-firewall.sh"
     grep -q 'WARNING: could not resolve' "${FIREWALL}"
 }
 
+@test "resolution has a second resolver behind the first" {
+    # A real report had every dig time out while curl kept working. With only dig in the picture that
+    # session ends with an empty allowlist and a container that cannot reach anything.
+    grep -q 'dig +short' "${FIREWALL}"
+    grep -q 'getent ahostsv4' "${FIREWALL}"
+}
+
+@test "an empty allowlist stops before the policy is touched, not after" {
+    # Installing default-deny around an allowlist that holds none of the agent's own hosts produces
+    # a session that dies several confusing steps later. The check has to come first.
+    check_line="$(grep -n 'refusing to install a default-deny firewall' "${FIREWALL}" | cut -d: -f1)"
+    drop_line="$(grep -n '^iptables -P OUTPUT DROP' "${FIREWALL}" | cut -d: -f1)"
+    [ -n "${check_line}" ] && [ -n "${drop_line}" ]
+    [ "${check_line}" -lt "${drop_line}" ]
+}
+
+@test "the failure messages say what to do, not only what broke" {
+    # Both are met by a user whose session refuses to start; a bare diagnosis leaves them stuck.
+    grep -q 'DOCKER_CODE_NET=full' "${FIREWALL}"
+    grep -q 'DOCKER_CODE_ALLOW_DOMAINS' "${FIREWALL}"
+}
+
 @test "extra domains can be added without editing the image" {
     grep -q 'DOCKER_CODE_ALLOW_DOMAINS' "${FIREWALL}"
     # The launcher has to know the knob, or the hook is unreachable. That it actually reaches the
