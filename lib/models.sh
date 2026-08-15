@@ -136,10 +136,32 @@ models_start_ollama() {
         --volume "${store}:/root/.ollama")
 
     # A GPU if the host has one wired into Docker; CPU inference otherwise. Asking for a GPU that is
-    # not there is a hard `docker run` error, so this is detected rather than assumed.
-    if [ "${DOCKER_CODE_MODELS_GPU:-auto}" != "0" ] && docker info --format '{{.Runtimes}}' 2>/dev/null | grep -q nvidia; then
-        models_ollama_create+=(--gpus all)
-    fi
+    # not there is a hard `docker run` error, so `auto` detects rather than assumes.
+    #
+    # Only the runtime *names* are matched, not the whole .Runtimes structure: that renders as ~6 KB
+    # of capability and seccomp detail per runtime, and grepping it for a vendor name is a false
+    # positive waiting to happen.
+    #
+    # The detection sees the NVIDIA Container Toolkit's registered runtime. A host wired up through
+    # CDI only has no such runtime, so `auto` finds nothing there and falls back to the CPU — which
+    # is why the value is more than a boolean: DOCKER_CODE_MODELS_GPU=1 forces `--gpus all`, and
+    # anything else is passed to --gpus verbatim, e.g. "device=0" or "all,capabilities=compute".
+    case "${DOCKER_CODE_MODELS_GPU:-auto}" in
+        0|false|none|off)
+            ;;
+        auto)
+            if docker info --format '{{range $name, $r := .Runtimes}}{{$name}} {{end}}' 2>/dev/null |
+                grep -qw nvidia; then
+                models_ollama_create+=(--gpus all)
+            fi
+            ;;
+        1|true|all)
+            models_ollama_create+=(--gpus all)
+            ;;
+        *)
+            models_ollama_create+=(--gpus "${DOCKER_CODE_MODELS_GPU}")
+            ;;
+    esac
 
     # Published only when asked for. The agents reach it over the Docker network, so by default
     # nothing new listens on the host — and when it is published it is bound to loopback.
@@ -149,8 +171,24 @@ models_start_ollama() {
 
     models_ollama_create+=("${OLLAMA_IMAGE}")
 
-    "${models_ollama_create[@]}" >/dev/null 2>&1 && return 0
-    models_container_running "${OLLAMA_CONTAINER}"
+    # Docker's own message, not a swallowed exit code. The failure people actually hit here is
+    # asking for a GPU the host cannot provide —
+    #   failed to discover GPU vendor from CDI: no known GPU vendor found
+    # — and a silent "did not start" would send them looking in the wrong place entirely.
+    local err
+    err="$("${models_ollama_create[@]}" 2>&1 >/dev/null)" && return 0
+
+    # Losing the race to a session that started it first is not a failure.
+    models_container_running "${OLLAMA_CONTAINER}" && return 0
+
+    [ -z "${err}" ] || warn "${err}"
+    case "${err}" in
+        *GPU*|*gpu*|*nvidia*)
+            warn "that is the GPU request failing. DOCKER_CODE_MODELS_GPU=0 runs on the CPU;"
+            warn "see the GPU section of LOCAL-MODELS.md for what the host needs."
+            ;;
+    esac
+    return 1
 }
 
 models_start_litellm() {
@@ -215,6 +253,7 @@ models_status() {
         echo "on disk:  $(du -sh "$(ollama_store)" 2>/dev/null | cut -f1)"
     fi
     echo "network:  ${MODELS_NETWORK}${MODELS_SUBNET:+ (${MODELS_SUBNET})}"
+    models_gpu_status
 
     # The endpoints and the key, printed rather than only documented.
     #
@@ -233,6 +272,34 @@ models_status() {
     else
         printf '  from the host: http://127.0.0.1:%s and http://127.0.0.1:%s\n' \
             "${OLLAMA_PORT}" "${LITELLM_PORT}"
+    fi
+}
+
+# Two different questions, both worth answering here: was the container *given* a GPU, and did Ollama
+# *find* one. They come apart — a container started with --gpus whose driver is too old for the
+# runtime still falls back to the CPU, and the difference is the whole diagnosis.
+models_gpu_status() {
+    local requests inference library name
+
+    requests="$(docker inspect -f '{{json .HostConfig.DeviceRequests}}' "${OLLAMA_CONTAINER}" 2>/dev/null || true)"
+    case "${requests}" in
+        ''|null|'[]')
+            echo "gpu:      not requested — the container was started for CPU inference"
+            echo "          (DOCKER_CODE_MODELS_GPU=1 forces it; see LOCAL-MODELS.md)"
+            ;;
+        *)
+            echo "gpu:      requested at start (--gpus)"
+            ;;
+    esac
+
+    # Ollama says what it settled on once, at startup: library=cpu or library=cuda/rocm.
+    inference="$(docker logs "${OLLAMA_CONTAINER}" 2>&1 | grep 'msg="inference compute"' | tail -n 1 || true)"
+    if [ -n "${inference}" ]; then
+        library="$(printf '%s' "${inference}" | sed -n 's/.*library=\([^ ]*\).*/\1/p')"
+        name="$(printf '%s' "${inference}" | sed -n 's/.*description=\([^ ]*\).*/\1/p')"
+        # On a CPU host both fields say "cpu"; only print the description when it adds something.
+        [ "${name}" = "${library}" ] && name=""
+        echo "ollama:   computing on ${library:-?}${name:+ (${name})}"
     fi
 }
 

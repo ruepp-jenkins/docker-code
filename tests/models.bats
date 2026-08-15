@@ -130,6 +130,22 @@ esac'
     [ "${status}" -ne 0 ]
 }
 
+@test "a container that will not start says why, in Docker's own words" {
+    # The failure people actually hit is asking for a GPU the host cannot provide. Swallowing the
+    # exit code would send them looking anywhere but at the GPU request.
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    *docker-code-ollama*)
+        echo "Error response from daemon: failed to discover GPU vendor from CDI" >&2
+        exit 125 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'DOCKER_CODE_MODELS_GPU=1 models_up'
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"failed to discover GPU vendor"* ]]
+    [[ "${output}" == *"DOCKER_CODE_MODELS_GPU=0"* ]]
+}
+
 @test "down stops both services and removes the network" {
     make_stub docker
     run models_sh 'models_down'
@@ -151,6 +167,87 @@ esac'
     run models_sh 'models_ensure_network'
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"in use"* ]]
+}
+
+@test "a GPU is requested only when Docker reports one" {
+    # Asking for a GPU that is not there is a hard `docker run` error, so the auto path has to detect
+    # rather than assume — and a host without the nvidia runtime must come up on the CPU, not fail.
+    make_stub docker 'case "$*" in
+    *Runtimes*) echo "io.containerd.runc.v2 runc " ;;
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_up'
+    [ "${status}" -eq 0 ]
+    [[ "$(stub_calls docker)" != *"--gpus"* ]]
+
+    stub_reset_calls docker
+    make_stub docker 'case "$*" in
+    *Runtimes*) echo "io.containerd.runc.v2 nvidia runc " ;;
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_up'
+    [[ "$(stub_calls docker)" == *"--gpus all"* ]]
+}
+
+@test "the runtime name is matched as a word, not as a substring" {
+    # .Runtimes renders as kilobytes of capability detail; a loose grep over it would turn any
+    # mention of a vendor name into a GPU request, and the container would then refuse to start.
+    grep -q 'range \$name, \$r := .Runtimes' "${REPO_ROOT}/lib/models.sh"
+    grep -q 'grep -qw nvidia' "${REPO_ROOT}/lib/models.sh"
+}
+
+@test "the GPU can be forced on, off, or pinned to one card" {
+    # Detection only sees the toolkit's registered runtime; a CDI-only host has none, so there has to
+    # be a way to say "yes, really".
+    make_stub docker 'case "$*" in
+    *Runtimes*) echo "runc " ;;
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+
+    run models_sh 'DOCKER_CODE_MODELS_GPU=1 models_up'
+    [[ "$(stub_calls docker)" == *"--gpus all"* ]]
+
+    stub_reset_calls docker
+    run models_sh 'DOCKER_CODE_MODELS_GPU=device=0 models_up'
+    [[ "$(stub_calls docker)" == *"--gpus device=0"* ]]
+
+    stub_reset_calls docker
+    run models_sh 'DOCKER_CODE_MODELS_GPU=0 models_up'
+    [[ "$(stub_calls docker)" != *"--gpus"* ]]
+}
+
+@test "status answers the GPU question in its own right" {
+    # Two separate facts, because they come apart: a container can be started with --gpus and Ollama
+    # still fall back to the CPU. "requested at start" plus "computing on cpu" is the diagnosis.
+    make_stub docker 'case "$*" in
+    *DeviceRequests*) echo "null" ;;
+    *logs*) echo "level=INFO msg=\"inference compute\" id=cpu library=cpu name=cpu description=cpu" ;;
+    *) echo running ;;
+esac'
+    run models_sh 'models_status'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"not requested"* ]]
+    [[ "${output}" == *"computing on cpu"* ]]
+}
+
+@test "the documented GPU values are the ones the code accepts" {
+    block="$(sed -n '/DOCKER_CODE_MODELS_GPU:-auto/,/esac/p' "${REPO_ROOT}/lib/models.sh")"
+    [ -n "${block}" ]
+    # Every value the GPU table in LOCAL-MODELS.md offers has to appear in that case statement, or
+    # the page promises a setting that silently does something else.
+    for value in auto 1 0; do
+        [[ "${block}" == *"${value}"* ]] || {
+            echo "LOCAL-MODELS.md documents DOCKER_CODE_MODELS_GPU=${value}, the code has no branch for it"
+            return 1
+        }
+    done
+    grep -q 'DOCKER_CODE_MODELS_GPU' "${REPO_ROOT}/LOCAL-MODELS.md"
+    # And the page has to tell people how to check, not just how to set it.
+    grep -q 'ollama ps' "${REPO_ROOT}/LOCAL-MODELS.md"
+    grep -q 'inference compute' "${REPO_ROOT}/LOCAL-MODELS.md"
 }
 
 @test "status prints the endpoints and the API key" {

@@ -124,6 +124,139 @@ DOCKER_CODE_DRY_RUN=1 claude-docker        # zeigt: kein docker-code-net, kein A
 
 ---
 
+## GPU
+
+Ohne GPU rechnet ein 14-B-Modell auf der CPU — das funktioniert, ist aber etwa eine Größenordnung
+langsamer. Ollama entscheidet das nicht selbst: der Container bekommt die Karte durchgereicht, oder
+er bekommt sie nicht.
+
+### Was gebraucht wird
+
+**NVIDIA unter Linux** — der Fall, für den das hier gebaut ist:
+
+1. Ein NVIDIA-Treiber auf dem **Host** (nicht im Container). `nvidia-smi` muss auf dem Host laufen.
+2. Das **NVIDIA Container Toolkit**, damit Docker die Karte überhaupt weiterreichen kann:
+
+```bash
+# Debian/Ubuntu — Paketquelle einrichten, siehe NVIDIA-Doku für die aktuelle Zeile
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+3. Genug VRAM. Faustregel für `qwen2.5-coder` in der Standard-Quantisierung: `7b` ~5 GB, `14b` ~9 GB,
+   `32b` ~20 GB. Passt das Modell nicht ganz hinein, lädt Ollama es teilweise — dann steht in
+   `ollama ps` etwas wie `45%/55% CPU/GPU`, und die Geschwindigkeit liegt dazwischen.
+
+**AMD/ROCm** ist mit `ollama/ollama:rocm` möglich, braucht aber ein anderes Image und
+`--device /dev/kfd --device /dev/dri` statt `--gpus`. docker-code richtet das nicht selbst ein; über
+`DOCKER_CODE_OLLAMA_IMAGE` und die Umgebung lässt es sich einhängen.
+
+**macOS**: Docker Desktop reicht die Apple-GPU **nicht** in Container durch. Ein containerisiertes
+Ollama rechnet dort immer auf der CPU. Wer Metal-Beschleunigung will, betreibt Ollama nativ auf dem
+Mac und zeigt docker-code darauf — siehe [Vom Host aus](#vom-host-aus), nur andersherum:
+`DOCKER_CODE_OLLAMA_CONTAINER` bleibt ungenutzt und die Tools bekommen die Host-Adresse.
+
+### Wie docker-code entscheidet
+
+| `DOCKER_CODE_MODELS_GPU` | Wirkung |
+|---|---|
+| *ungesetzt* / `auto` | GPU nur, wenn Docker die `nvidia`-Runtime meldet — Standard |
+| `1` | `--gpus all` erzwingen, auch wenn die Erkennung nichts findet |
+| `device=0` | an eine bestimmte Karte binden (wird unverändert an `--gpus` gereicht) |
+| `0` | CPU erzwingen |
+
+Erkannt statt angenommen, weil eine GPU anzufordern, die es nicht gibt, ein **harter Startfehler**
+ist:
+
+```
+docker: Error response from daemon: failed to discover GPU vendor from CDI:
+        no known GPU vendor found
+```
+
+Die Erkennung sieht die Runtime, die das Container Toolkit registriert. Ein Host, der nur über CDI
+verdrahtet ist, hat keine solche Runtime — dort findet `auto` nichts und du brauchst
+`DOCKER_CODE_MODELS_GPU=1`.
+
+Nach jeder Änderung muss der Container neu gebaut werden, denn `--gpus` wird beim Start gesetzt:
+
+```bash
+docker-code models down
+DOCKER_CODE_MODELS_GPU=1 docker-code models up
+```
+
+Dauerhaft gehört die Variable in die `.bashrc`.
+
+### Testen, ob die GPU wirklich benutzt wird
+
+Der schnellste Weg:
+
+```bash
+docker-code models status
+```
+
+```
+gpu:      requested at start (--gpus)
+ollama:   computing on cuda (NVIDIA-GeForce-RTX-4080)
+```
+
+Steht dort stattdessen `not requested` oder `computing on cpu`, läuft es auf der CPU. Die beiden
+Zeilen sind absichtlich getrennt: ein Container *kann* mit `--gpus` gestartet worden sein und Ollama
+trotzdem auf der CPU rechnen — etwa wenn der Treiber zu alt ist. Dann steht da `requested at start`
+und `computing on cpu`, und das ist genau die Diagnose.
+
+Wenn du es genauer wissen willst, von außen nach innen:
+
+```bash
+# 1. Sieht der Host die Karte?
+nvidia-smi
+
+# 2. Kann Docker sie durchreichen?
+docker run --rm --gpus all ubuntu:24.04 nvidia-smi
+
+# 3. Sieht der Ollama-Container sie?
+docker exec docker-code-ollama nvidia-smi
+
+# 4. Worauf hat Ollama sich beim Start festgelegt?
+docker logs docker-code-ollama 2>&1 | grep "inference compute"
+#   library=cuda  -> GPU        library=cpu -> CPU
+```
+
+**Der eigentliche Beweis** ist aber, worauf ein geladenes Modell tatsächlich rechnet. Dafür muss es
+geladen sein — also erst eine Anfrage stellen, dann nachsehen:
+
+```bash
+docker-code models run qwen2.5-coder:14b "hi"      # lädt das Modell
+docker exec docker-code-ollama ollama ps
+```
+
+```
+NAME                 ID              SIZE     PROCESSOR    CONTEXT    UNTIL
+qwen2.5-coder:14b    xxxxxxxxxxxx    10 GB    100% GPU     4096       4 minutes from now
+```
+
+Die Spalte `PROCESSOR` ist die Antwort: `100% GPU`, `100% CPU`, oder eine Aufteilung wie
+`45%/55% CPU/GPU`, wenn das Modell nicht ganz ins VRAM passt. Ohne geladenes Modell ist die Liste
+leer — Ollama entlädt nach einigen Minuten Leerlauf.
+
+Beim Zusehen in Echtzeit:
+
+```bash
+watch -n 1 nvidia-smi          # Auslastung und VRAM während einer Anfrage
+```
+
+### Wenn die GPU nicht benutzt wird
+
+| Beobachtung | Ursache |
+|---|---|
+| `models status` sagt `not requested` | die Erkennung fand keine `nvidia`-Runtime → `DOCKER_CODE_MODELS_GPU=1` und `models down && models up` |
+| Schritt 2 oben scheitert | Container Toolkit fehlt oder Docker wurde nach `nvidia-ctk` nicht neu gestartet |
+| Schritt 3 scheitert, Schritt 2 klappt | der Container lief schon vor der Änderung — `docker-code models down && docker-code models up` |
+| `requested at start`, aber `computing on cpu` | Treiber zu alt für die CUDA-Version im Image; `docker logs docker-code-ollama` nennt den Grund |
+| `PROCESSOR` zeigt eine Aufteilung | Modell passt nicht ins VRAM → kleinere Variante (`7b`) oder stärkere Quantisierung |
+
+---
+
 ## Von Hand konfigurieren
 
 Wer die Werte lieber selbst in die Konfiguration des Tools schreibt — im TUI, in einer Config-Datei —
@@ -390,8 +523,8 @@ docker run --rm --network docker-code-net curlimages/curl -s \
   -d '{"contents":[{"parts":[{"text":"say OK"}]}]}'
 ```
 
-**Alles ist langsam** — ohne GPU rechnet ein 14-B-Modell auf der CPU. `docker-code models status`
-zeigt, ob der Container mit `--gpus all` gestartet wurde.
+**Alles ist langsam** — vermutlich rechnet es auf der CPU. `docker-code models status` sagt es in
+zwei Zeilen; der ganze Ablauf zum Nachprüfen steht unter [GPU](#gpu).
 
 ---
 
