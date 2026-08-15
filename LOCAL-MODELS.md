@@ -60,6 +60,62 @@ DOCKER_CODE_DRY_RUN=1 DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:
 
 ---
 
+## Welches Modell für einen Agent
+
+Zwei verschiedene Aufgaben, und der Unterschied entscheidet, ob eine Session funktioniert:
+
+- **Code schreiben, wenn man fragt** — dafür reicht jedes Coder-Modell, `qwen2.5-coder:14b` ist gut
+  darin.
+- **Als Agent arbeiten** — Dateien lesen, Kommandos ausführen, Ergebnisse verwerten. Dafür muss das
+  Modell **Tool-Calls** beherrschen: Der Agent schickt seine Werkzeuge im Feld `tools` mit und
+  erwartet die Antwort in `tool_calls`. Alle sieben Tools hier arbeiten so.
+
+Ein Modell ohne dieses Training schreibt den Funktionsaufruf als Text in die Antwort, der Agent kann
+ihn nicht ausführen und zeigt rohes JSON an. **`qwen2.5-coder` gehört in diese Gruppe** — es ist ein
+Completion-Modell, kein Agent-Modell, unabhängig von der Größe.
+
+| Modell | Download | als Agent |
+|---|---|---|
+| `qwen3-coder:30b` | ~17 GB | ja — das Modell, für das Qwen Code gebaut ist. MoE mit ~3 B aktiven Parametern, also schnell, sobald es ins VRAM passt |
+| `qwen3:14b` | ~8,6 GB | ja — dieselbe Größenklasse wie `qwen2.5-coder:14b` |
+| `qwen3:8b` | ~4,9 GB | ja — wenn das VRAM knapp ist |
+| `qwen2.5-coder:14b` | ~8,4 GB | **nein** — gut für Completion, unbrauchbar als Agent |
+
+Ob ein Modell es grundsätzlich anbietet, sagt seine Capability-Liste:
+
+```bash
+docker exec docker-code-ollama ollama show qwen3:8b | grep -A4 Capabilities
+#   completion / tools / insert / thinking
+```
+
+Das ist allerdings nur die halbe Auskunft: `tools` steht auch bei Modellen dort, die das Format in
+der Praxis nicht einhalten — die Capability beschreibt das Prompt-Template, nicht das Training. Der
+belastbare Test ist der Aufruf mit echten `tools`, siehe
+[Der Agent zeigt JSON](#wenn-etwas-nicht-antwortet).
+
+### Kontextfenster
+
+Der zweite stille Grund für einen Agent, der Unsinn tut: Ein Agent schickt einen langen
+System-Prompt plus die Schemas aller Werkzeuge — schnell über 10.000 Token. Passt das nicht ins
+Kontextfenster, schneidet Ollama vorne ab, und das Modell erfindet Werkzeugnamen, die es nie gesehen
+hat.
+
+```bash
+docker exec docker-code-ollama ollama ps      # Spalte CONTEXT, während ein Modell geladen ist
+```
+
+Ollama wählt den Wert nach verfügbarem VRAM (4k/32k/256k). Steht dort `4096`, ist das für einen
+Agent zu wenig:
+
+```bash
+export DOCKER_CODE_OLLAMA_ENV="OLLAMA_CONTEXT_LENGTH=32768"
+docker-code models down && docker-code models up
+```
+
+Mehr Kontext kostet VRAM — wenn danach `ollama ps` eine CPU/GPU-Aufteilung zeigt, war es zu viel.
+
+---
+
 ## Dauerhaft: der `.bashrc`-Block
 
 Zum Kopieren ans Ende von `~/.bashrc` (unter macOS `~/.zshrc`), danach eine neue Shell öffnen:
@@ -678,6 +734,36 @@ DOCKER_CODE_LOCAL=1 DOCKER_CODE_SHELL=1 qwen-docker -c 'curl -s http://localhost
 
 **„model not found"** — der Name muss exakt dem entsprechen, was `docker-code models list` zeigt,
 inklusive Tag. `qwen2.5-coder` ohne `:14b` ist ein anderer Name als `qwen2.5-coder:14b`.
+
+**Der Agent zeigt JSON, statt etwas zu tun** — so etwas:
+
+```
+◆︎ { "name": "write_file", "arguments": { "file_path": "…", "content": "…" } }
+```
+
+Das ist ein **Modellproblem, kein Verbindungsproblem**. Ein Agent bekommt seine Werkzeuge über
+`tools` und erwartet die Antwort im Feld `tool_calls`; ein Modell, das dafür nicht trainiert ist,
+schreibt dieselbe Struktur stattdessen als Text in `content`. Der Agent hat nichts zu parsen und
+zeigt den Text roh an. Erfundene Werkzeugnamen im JSON sind dasselbe Bild — dann hat das Modell die
+Werkzeugliste nicht mehr im Kontext.
+
+Welche Modelle das können, steht unter [Welches Modell für einen Agent](#welches-modell-für-einen-agent).
+Nachprüfen lässt es sich in einem Aufruf, ohne Agent:
+
+```bash
+docker run --rm --network docker-code-net curlimages/curl -s \
+  http://docker-code-ollama:11434/v1/chat/completions \
+  -H 'content-type: application/json' -H 'authorization: Bearer docker-code-local' \
+  -d '{"model":"<modell>","stream":false,
+       "messages":[{"role":"user","content":"Write hi into a.txt"}],
+       "tools":[{"type":"function","function":{"name":"write_file",
+         "parameters":{"type":"object","properties":{"file_path":{"type":"string"},
+                                                     "content":{"type":"string"}}}}}]}'
+```
+
+Kommt `"tool_calls": [...]` zurück, taugt das Modell als Agent. Steht die Funktion stattdessen als
+Text in `"content"`, taugt es nicht — daran ändert keine Einstellung in docker-code oder im Agent
+etwas.
 
 **Gemini antwortet nicht** — dort steht das Gateway dazwischen:
 
