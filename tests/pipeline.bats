@@ -41,7 +41,7 @@ JENKINSFILE="${BATS_TEST_DIRNAME}/../Jenkinsfile"
 }
 
 @test "agent builds are sequential per node, because the builder and cache are shared per machine" {
-    # One branch per agent would put seven builds on one node, each creating and then removing the
+    # One branch per agent would put one build per agent on one node, each creating and then removing the
     # shared `mybuilder` underneath the others. Parallel across architectures only.
     grep -q "stage('agents amd64')" "${JENKINSFILE}"
     grep -q "stage('agents arm64')" "${JENKINSFILE}"
@@ -166,7 +166,7 @@ JENKINSFILE="${BATS_TEST_DIRNAME}/../Jenkinsfile"
 }
 
 @test "an agent image on a branch builds FROM that branch's own base" {
-    # A change to the base is then tested by all seven agents before either reaches master.
+    # A change to the base is then tested by all eight agents before either reaches master.
     run bash -c "export IMAGE_FULLNAME=ruepp/docker-code AGENT_ID=base BRANCH_NAME=master DATESTAMP=20260101; \
         . '${REPO_ROOT}/scripts/docker_tags.sh'; echo \"\${DOCKERFILE}|\${BASE_IMAGE_REF}\""
     [ "${output}" = "base/Dockerfile|" ]

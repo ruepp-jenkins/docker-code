@@ -123,7 +123,7 @@ agent_parse_file() {
 # agent_load <id>
 #
 # Clears any previously loaded agent, then populates AGENT_* for this one. Defaults are filled in
-# here rather than repeated in seven files: only the three required keys are ever mandatory.
+# here rather than repeated in every agent file: only the three required keys are ever mandatory.
 agent_load() {
     local id="$1"
     local file="${AGENTS_DIR}/${id}/agent.env"

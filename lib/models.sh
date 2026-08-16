@@ -5,7 +5,7 @@
 # network of their own. Sourced by bin/docker-code; every name below is fixed so that a second
 # session finds the services the first one started rather than starting its own.
 #
-# Why central: seven tools that each keep their own copy of a 20 GB model is 140 GB of the same
+# Why central: eight tools that each keep their own copy of a 20 GB model is 160 GB of the same
 # bytes. ~/docker-code/models is the one place they live, and every agent reaches the same daemon.
 
 MODELS_NETWORK="${DOCKER_CODE_MODELS_NETWORK:-docker-code-net}"

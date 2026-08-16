@@ -32,7 +32,7 @@ DATESTAMP="${DATESTAMP:-$(date +%Y%m%d)}"
 SAFE_BRANCH="$(echo "${BRANCH_NAME:-local}" | tr '/' '-')"
 
 # One repository per image rather than one repository with an agent-prefixed tag. A tag list that
-# interleaves seven tools is unreadable, and `docker pull ruepp/docker-code-gemini` is the name a
+# interleaves every tool is unreadable, and `docker pull ruepp/docker-code-gemini` is the name a
 # user would guess.
 IMAGE_STEM="${IMAGE_FULLNAME}-${AGENT_ID}"
 

@@ -31,8 +31,8 @@ def checkoutRepo() {
 // One image, one architecture. Identical for the base and for every agent, so it lives in one place;
 // the post blocks below cannot move here — junit and cleanWs are stage directives, not steps.
 //
-// The caller checks the repository out, not this function: a stage that builds seven images does it
-// once rather than seven times into the same workspace.
+// The caller checks the repository out, not this function: a stage that builds every image does it
+// once rather than once per agent into the same workspace.
 def buildImage(String agentId, String arch, String platform) {
     withEnv(["AGENT_ID=${agentId}", "EXPECTED_PLATFORM=${platform}", "TEST_REPORT_SUFFIX=${arch}"]) {
         sh './scripts/start.sh'
@@ -58,7 +58,7 @@ pipeline {
     agent none
 
     environment {
-        // The stem; scripts/docker_tags.sh appends -base or -<agent>, so seven tools live in seven
+        // The stem; scripts/docker_tags.sh appends -base or -<agent>, so eight tools live in eight
         // repositories rather than in one tag list nobody can read.
         IMAGE_FULLNAME = 'ruepp/docker-code'
         DOCKER_API_PASSWORD = credentials('DOCKER_API_PASSWORD')
@@ -75,7 +75,7 @@ pipeline {
     }
 
     triggers {
-        // Reasons to rebuild without a commit: one of the seven tools released a new version, or the
+        // Reasons to rebuild without a commit: one of the eight tools released a new version, or the
         // base image did. Both matter because the image is the update path for its users — every
         // tool is installed system-wide with its auto-updater off, and the base image carries the OS
         // security updates. Neither touches the persistent home directories, so an update costs
@@ -170,7 +170,7 @@ pipeline {
         stage('Base') {
             // The shared layer, and the only place the test suite runs. Its `verified` stage refuses
             // to produce an image when a test failed, and every agent image copies the resulting
-            // stamp — so one red test blocks all seven rather than only the one that was touched.
+            // stamp — so one red test blocks all eight rather than only the one that was touched.
             parallel {
                 stage('base amd64') {
                     agent { label 'docker' }
