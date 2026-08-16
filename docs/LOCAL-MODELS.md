@@ -1,17 +1,14 @@
-# Lokale Modelle
+# Local models
 
-Ein Modellspeicher für alle Agents. Acht Tools, die jeweils ihre eigene Kopie eines 9-GB-Modells
-halten, wären 72 GB derselben Bytes — hier liegt es einmal unter `~/docker-code/models/`, und jeder
-Container spricht denselben Daemon an.
+One model store serves all agents. Eight separate copies of a 9 GB model would consume 72 GB; here the model is stored once under `~/docker-code/models/`, and every container uses the same daemon.
 
-Alle Beispiele auf dieser Seite verwenden **`qwen2.5-coder:14b`** (~9 GB, passt auf eine 16-GB-Karte)
-und sind so gemeint, wie sie dastehen: kopieren, einfügen, läuft.
+All examples on this page use **`qwen3:14b`** (~9 GB, suitable for a 16 GB GPU) and are intended to work as written: copy, paste, run.
 
 ---
 
-## Die Zugangsdaten
+## The access data
 
-Das ist der Teil, den man beim Konfigurieren von Hand braucht:
+This is the part you need when configuring by hand:
 
 | | URL | API-Key |
 |---|---|---|
@@ -20,131 +17,112 @@ Das ist der Teil, den man beim Konfigurieren von Hand braucht:
 | **LiteLLM-Gateway** — Gemini-Format | `http://localhost:4000` | `docker-code-local` |
 | **LiteLLM-Gateway** — OpenAI-Format | `http://localhost:4000/v1` | `docker-code-local` |
 
-**Der Key ist überall `docker-code-local`.**
+**The key is `docker-code-local` everywhere.**
 
-Er ist kein Geheimnis: er authentifiziert einen Container gegenüber einem Gateway in einem privaten
-Docker-Netz ohne veröffentlichten Port. Er existiert, weil LiteLLM sich weigert, ohne Key zu
-antworten — ohne ihn kommt `401`, mit einem falschen `400`.
+It is not a secret: it authenticates a container to a gateway on a private Docker network without a published port. LiteLLM requires it, returning `401` when it is missing and `400` when it is wrong.
 
-Ollama selbst prüft gar nichts; dort funktioniert jeder beliebige Wert. Die meisten Tools bestehen
-aber auf einem nicht-leeren Feld, und es ist eine Sorge weniger, wenn überall dasselbe steht. Nimm
-also auch dort `docker-code-local`.
+Ollama does not validate the key, but most tools require a non-empty value. Using `docker-code-local` consistently avoids needless differences.
 
-Ändern lässt er sich über `LOCAL_API_KEY` in `lib/models.sh`; danach `docker-code models down && docker-code models up`.
+Change it through `LOCAL_API_KEY` in `lib/models.sh`, then run `docker-code models down && docker-code models up`.
 
 ---
 
-## Schnellstart
+## Quick start
 
 ```bash
 docker-code models up
-docker-code models pull qwen2.5-coder:14b
+docker-code models pull qwen3:14b
 docker-code models list
 ```
 
-Der erste Pull lädt ~9 GB. Danach, im Projektverzeichnis:
+The first pull loads ~9 GB. Then, in the project directory:
 
 ```bash
 export DOCKER_CODE_LOCAL=1
-export DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b
+export DOCKER_CODE_LOCAL_MODEL=qwen3:14b
 
-qwen-docker          # oder codex-docker, gemini-docker, claude-docker,
+qwen-docker          # Or codex-docker, gemini-docker, claude-docker,
                      # mistral-docker, opencode-docker
 ```
 
-Damit ist **nichts von Hand zu konfigurieren** — URL, Key und Modellname setzt der Wrapper. Nachsehen,
-was genau ankommt, ohne etwas zu starten:
+This means that **nothing has to be configured by hand** - the wrapper sets the URL, key and model name. Check what exactly arrives without starting anything:
 
 ```bash
-DOCKER_CODE_DRY_RUN=1 DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b qwen-docker
+DOCKER_CODE_DRY_RUN=1 DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b qwen-docker
 ```
 
 ---
 
-## Welches Modell für einen Agent
+## Which model for an agent
 
-Zwei verschiedene Aufgaben, und der Unterschied entscheidet, ob eine Session funktioniert:
+Two different tasks, and the difference determines whether a session works:
 
-- **Code schreiben, wenn man fragt** — dafür reicht jedes Coder-Modell, `qwen2.5-coder:14b` ist gut
-  darin.
-- **Als Agent arbeiten** — Dateien lesen, Kommandos ausführen, Ergebnisse verwerten. Dafür muss das
-  Modell **Tool-Calls** beherrschen: Der Agent schickt seine Werkzeuge im Feld `tools` mit und
-  erwartet die Antwort in `tool_calls`. Alle acht Tools hier arbeiten so.
+- **Write code when asked** — any capable coding model can do this; `qwen3:14b` is good at it.
+- **Work as an agent** — read files, execute commands, and evaluate results. This requires a model
+  with **tool-call support**: the agent sends tools in the `tools` field and expects `tool_calls` in
+  the response. All eight tools in this project use this mechanism.
 
-Ein Modell ohne dieses Training schreibt den Funktionsaufruf als Text in die Antwort, der Agent kann
-ihn nicht ausführen und zeigt rohes JSON an. **`qwen2.5-coder` gehört in diese Gruppe** — es ist ein
-Completion-Modell, kein Agent-Modell, unabhängig von der Größe.
+A model without this training writes the function call as text in the response, the agent cannot execute it and displays raw JSON. **`qwen2.5-coder` belongs in this group** — it is a completion model, not an agent model, regardless of size.
 
-| Modell | Download | als Agent |
+| Model | Download | as an agent |
 |---|---|---|
-| `qwen3-coder:30b` | ~17 GB | ja — das Modell, für das Qwen Code gebaut ist. MoE mit ~3 B aktiven Parametern, also schnell, sobald es ins VRAM passt |
-| `qwen3:14b` | ~8,6 GB | ja — dieselbe Größenklasse wie `qwen2.5-coder:14b` |
-| `qwen3:8b` | ~4,9 GB | ja — wenn das VRAM knapp ist |
-| `qwen2.5-coder:14b` | ~8,4 GB | **nein** — gut für Completion, unbrauchbar als Agent |
+| `qwen3-coder:30b` | ~17GB | yes — the model that Qwen Code is built for. MoE with ~3 B active parameters, so fast as soon as it fits in the VRAM |
+| `qwen3:14b` | ~8.6GB | yes — same size class as `qwen3:14b` |
+| `qwen3:8b` | ~4.9GB | yes — if VRAM is low |
+| `qwen2.5-coder:14b` | ~8.4GB | **no** — good for completion, useless as agent |
 
-Ob ein Modell es grundsätzlich anbietet, sagt seine Capability-Liste:
+Its capability list says whether a model basically offers it:
 
 ```bash
 docker exec docker-code-ollama ollama show qwen3:8b | grep -A4 Capabilities
 #   completion / tools / insert / thinking
 ```
 
-Das ist allerdings nur die halbe Auskunft: `tools` steht auch bei Modellen dort, die das Format in
-der Praxis nicht einhalten — die Capability beschreibt das Prompt-Template, nicht das Training. Der
-belastbare Test ist der Aufruf mit echten `tools`, siehe
-[Der Agent zeigt JSON](#wenn-etwas-nicht-antwortet).
+However, that is only half the information: `tools` is also there for models that do not adhere to the format in practice - the capability describes the prompt template, not the training. The reliable test is the call with real `tools`, see [The agent shows JSON](#if-something-doesnt-respond).
 
-### Kontextfenster
+### Context window
 
-Der zweite stille Grund für einen Agent, der Unsinn tut: Ein Agent schickt einen langen
-System-Prompt plus die Schemas aller Werkzeuge — schnell über 10.000 Token, also mehr als das
-4k-Default-Fenster überhaupt fassen kann. Was nicht hineinpasst, fällt weg, und das Modell arbeitet
-mit dem, was übrig bleibt. Die typischen Symptome:
+The second silent reason for an agent doing nonsense: An agent sends a long system prompt plus the schemas of all the tools — quickly over 10,000 tokens, more than the 4k default window can even hold. What doesn't fit is eliminated, and the model works with what's left. The typical symptoms:
 
-- erfundene Werkzeugnamen, die in keinem Schema stehen
-- „none of the provided tools can be used", obwohl Werkzeuge mitgeschickt wurden
-- **Platzhalterpfade wie `/path/to/project/`** statt des echten Arbeitsverzeichnisses — das Modell
-  hat den Umgebungsblock nicht (mehr) gesehen und rät. Den Pfad in der Session noch einmal zu
-  nennen, hilft nicht: Es füllt das Fenster weiter, statt es zu vergrößern.
+- invented tool names that are not in any schema
+- "none of the provided tools can be used", although tools were sent along
+- **Wildcard paths like `/path/to/project/`** instead of the real working directory — the model
+  hasn't seen the surrounding block (anymore) and is guessing. The path in the session again
+  doesn't help: it continues to fill the window instead of enlarging it.
 
-Der Agent kann das nicht abstellen — über die OpenAI-API gibt es kein `num_ctx`, das Fenster
-bestimmt der Server.
+The agent cannot stop this - there is no `num_ctx` via the OpenAI API, the window is determined by the server.
 
 ```bash
-docker exec docker-code-ollama ollama ps      # Spalte CONTEXT, während ein Modell geladen ist
+docker exec docker-code-ollama ollama ps      # CONTEXT column while a model is loaded
 ```
 
-Ollama wählt den Wert nach verfügbarem VRAM (4k/32k/256k). Steht dort `4096`, ist das für einen
-Agent zu wenig:
+Ollama chooses the value according to available VRAM (4k/32k/256k). If it says `4096`, that's not enough for an agent:
 
 ```bash
 export DOCKER_CODE_OLLAMA_ENV="OLLAMA_CONTEXT_LENGTH=32768"
 docker-code models down && docker-code models up
 ```
 
-Mehr Kontext kostet VRAM — wenn danach `ollama ps` eine CPU/GPU-Aufteilung zeigt, war es zu viel.
+More context costs VRAM — if `ollama ps` shows a CPU/GPU split afterwards, it was too much.
 
-### Wie groß, und was es kostet
+### How big and how much it costs
 
-Zwei Grenzen, und die niedrigere gewinnt.
+Two boundaries and the lower one wins.
 
-**Das Modell.** Mehr als sein natives Fenster nimmt es nicht an: `qwen3:8b` und `qwen3:14b` können
-40.960, `qwen3-coder:30b` kann 262.144. Bei den dichten Qwen3-Modellen ist 32768 also schon fast das
-Maximum — dort lohnt die Frage nach mehr gar nicht.
+**The model.** It doesn't accept more than its native window: `qwen3:8b` and `qwen3:14b` can do 40,960, `qwen3-coder:30b` can do 262,144. For the dense Qwen3 models, 32768 is almost the maximum - there it's not worth asking for more.
 
-**Das VRAM.** Der KV-Cache wächst linear mit dem Fenster und wird schnell größer als das Modell
-selbst:
+**The VRAM.** The KV cache grows linearly with the window and quickly becomes larger than the model itself:
 
 ```
-KV-Cache = 2 × Layer × KV-Heads × head_dim × 2 Byte × Kontext
+KV-Cache = 2 × layers × KV heads × head_dim × 2 bytes × context
 ```
 
-| Modell | pro 1000 Token | 32k | 64k |
+| Model | per 1000 tokens | 32k | 64k |
 |---|---|---|---|
-| `qwen3:14b` (40 Layer, 8 KV-Heads) | ~160 MB | ~5,0 GB | über dem Modelllimit |
-| `qwen3-coder:30b` (48 Layer, 4 KV-Heads) | ~96 MB | ~3,0 GB | ~6,0 GB |
+| `qwen3:14b` (40 layers, 8 KV heads) | ~160MB | ~5.0GB | above the model limit |
+| `qwen3-coder:30b` (48 layers, 4 KV heads) | ~96MB | ~3.0GB | ~6.0GB |
 
-Was tatsächlich belegt wird, sagt Ollama beim Laden:
+What is actually proven is what Ollama says when loading:
 
 ```bash
 docker logs docker-code-ollama 2>&1 | grep -E "KV buffer size|n_ctx_train"
@@ -152,315 +130,275 @@ docker logs docker-code-ollama 2>&1 | grep -E "KV buffer size|n_ctx_train"
 #   print_info: n_ctx_train = 262144
 ```
 
-Statt das Fenster zu vergrößern, lohnt sich meist der billigere Hebel — ein quantisierter KV-Cache
-halbiert (`q8_0`) oder viertelt (`q4_0`) den Verbrauch:
+Instead of increasing the window, the cheaper lever is usually worthwhile - a quantized KV cache halves (`q8_0`) or quarters (`q4_0`) the consumption:
 
 ```bash
 export DOCKER_CODE_OLLAMA_ENV="OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_NUM_PARALLEL=1"
 ```
 
-`OLLAMA_NUM_PARALLEL=1`, damit Ollama das Fenster nicht auf mehrere Slots vervielfacht. Und die
-Quantisierung braucht Flash Attention, das auf AMD nicht jede Karte kann: Halbiert sich die
-`KV buffer size` im Log nicht, hat sie nicht gegriffen.
+`OLLAMA_NUM_PARALLEL=1` so that Ollama does not multiply the window to multiple slots. And the quantization requires flash attention, which not every card on AMD can do: If the `KV buffer size` doesn't halve in the log, it hasn't worked.
 
-Größer ist dabei nicht automatisch besser — die Trefferquote langer Kontexte fällt in der Mitte ab,
-und jede Runde muss das Fenster erst verarbeiten. Ein Agent, der gezielt Dateien öffnet, arbeitet mit
-32–64k besser als einer, der 200k füllt.
+Bigger is not automatically better - the hit rate of long contexts drops in the middle, and each round has to process the window first. An agent that opens targeted files performs better with 32-64k than one that fills 200k.
 
 ---
 
-## Dauerhaft: der `.bashrc`-Block
+## Permanent: the `.bashrc` block
 
-Zum Kopieren ans Ende von `~/.bashrc` (unter macOS `~/.zshrc`), danach eine neue Shell öffnen:
+To copy to the end of `~/.bashrc` (under macOS `~/.zshrc`), then open a new shell:
 
 ```bash
 # ---- docker-code -------------------------------------------------------------
 export PATH="$HOME/.local/bin:$PATH"
 
-# Lokale Modelle für die Tools, die sie können — pro Agent, nicht pauschal.
+# Local models for supported tools—configured per agent, not globally.
 export DOCKER_CODE_QWEN_LOCAL=1
-export DOCKER_CODE_QWEN_LOCAL_MODEL=qwen2.5-coder:14b
+export DOCKER_CODE_QWEN_LOCAL_MODEL=qwen3:14b
 
 export DOCKER_CODE_OPENCODE_LOCAL=1
-export DOCKER_CODE_OPENCODE_LOCAL_MODEL=qwen2.5-coder:14b
+export DOCKER_CODE_OPENCODE_LOCAL_MODEL=qwen3:14b
 
 export DOCKER_CODE_CODEX_LOCAL=1
-export DOCKER_CODE_CODEX_LOCAL_MODEL=qwen2.5-coder:14b
+export DOCKER_CODE_CODEX_LOCAL_MODEL=qwen3:14b
 
-# Claude und Gemini absichtlich nicht: die laufen weiter über ihr Abo bzw. ihren
-# Cloud-Key. Zum Umschalten für einen einzelnen Aufruf genügt:
-#     DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b claude-docker
+# Claude and Gemini are intentionally omitted: they continue using their subscription or cloud key.
+# To switch one invocation, use:
+#     DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b claude-docker
 # ------------------------------------------------------------------------------
 ```
 
-**Pro Agent statt pauschal** ist hier der Punkt. `DOCKER_CODE_LOCAL=1` global gesetzt würde auch
-Claude Code auf das lokale Modell umbiegen — also genau den Agent, für den du vermutlich ein Abo
-bezahlst. `DOCKER_CODE_<AGENT>_<KNOPF>` schlägt `DOCKER_CODE_<KNOPF>` schlägt den Standard, und das
-gilt für **jeden** Schalter aus der Tabelle im README, nicht nur für diese beiden.
+**Per agent instead of flat rate** is the point here. `DOCKER_CODE_LOCAL=1` set globally would also switch Claude Code to the local model - i.e. the exact agent for which you are probably paying a subscription. `DOCKER_CODE_<AGENT>_<KNOPF>` beats `DOCKER_CODE_<KNOPF>` beats the standard, and that applies to **every** switch from the table in the README, not just these two.
 
-Wer es doch überall will:
+If you want it everywhere:
 
 ```bash
 export DOCKER_CODE_LOCAL=1
-export DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b
-export DOCKER_CODE_CLAUDE_LOCAL=0      # eine Ausnahme davon
+export DOCKER_CODE_LOCAL_MODEL=qwen3:14b
+export DOCKER_CODE_CLAUDE_LOCAL=0      # One exception
 ```
 
-### Was hier *nicht* hingehört
+### What *doesn't* belong here
 
 ```bash
-# NICHT in die .bashrc:
+# DO NOT put these in .bashrc:
 export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_API_KEY=docker-code-local
 ```
 
-Das sind Variablen, die der Wrapper an `codex-docker` und `qwen-docker` **durchreicht** — auch an
-Sessions, die *ohne* `DOCKER_CODE_LOCAL=1` laufen. Dort gibt es aber keine Weiterleitung auf
-`localhost:11434`, und die Session läuft in einen Verbindungsfehler statt zu ihrem Cloud-Provider.
-Setz stattdessen die `DOCKER_CODE_*_LOCAL`-Schalter oben; die tool-eigenen Variablen setzt der
-Wrapper dann selbst, und nur dann, wenn die Brücke auch steht.
+These are variables that the wrapper **passes** through to `codex-docker` and `qwen-docker` — also to sessions that run *without* `DOCKER_CODE_LOCAL=1`. However, there is no redirection to `localhost:11434`, and the session runs into a connection error instead of to your cloud provider. Set the `DOCKER_CODE_*_LOCAL` switches above instead; The wrapper then sets the tool's own variables itself, and only if the bridge is in place.
 
-Auf dem Host sinnvoll sind sie nur, wenn du ein Tool *außerhalb* von docker-code betreibst — dann
-aber mit `127.0.0.1` und veröffentlichten Ports, siehe [Vom Host aus](#vom-host-aus).
+They only make sense on the host if you run a tool *outside* of docker-code - but then with `127.0.0.1` and published ports, see [From Host](#from-the-host).
 
-### Prüfen, ob es greift
+### Check whether it works
 
 ```bash
-docker-code models status                  # laufen die Dienste? wie lautet der Key?
-DOCKER_CODE_DRY_RUN=1 qwen-docker          # zeigt OPENAI_BASE_URL/-MODEL, ohne zu starten
-DOCKER_CODE_DRY_RUN=1 claude-docker        # zeigt: kein docker-code-net, kein ANTHROPIC_BASE_URL
+docker-code models status                  # Are services running, and what is the key?
+DOCKER_CODE_DRY_RUN=1 qwen-docker          # Show OPENAI_BASE_URL/-MODEL without starting
+DOCKER_CODE_DRY_RUN=1 claude-docker        # Show no docker-code-net and no ANTHROPIC_BASE_URL
 ```
 
 ---
 
 ## GPU
 
-Ohne GPU rechnet ein 14-B-Modell auf der CPU — das funktioniert, ist aber etwa eine Größenordnung
-langsamer. Ollama entscheidet das nicht selbst: der Container bekommt die Karte durchgereicht, oder
-er bekommt sie nicht.
+Without a GPU, a 14B model calculates on the CPU - it works, but is about an order of magnitude slower. Ollama doesn't decide this himself: the container gets the card passed through, or he doesn't get it.
 
-Zwei Hersteller, zwei völlig verschiedene Wege in den Container: NVIDIA über eine Container-Runtime,
-die die Karte injiziert (`--gpus`), AMD über zwei Gerätedateien, die man selbst hineinreicht
-(`--device`) — plus ein anderes Image. Deshalb ist `DOCKER_CODE_MODELS_GPU` kein Schalter, sondern
-eine Wahl:
+Two manufacturers, two completely different ways into the container: NVIDIA via a container runtime that injects the card (`--gpus`), AMD via two device files that you submit yourself (`--device`) — plus a different image. That's why `DOCKER_CODE_MODELS_GPU` is not a switch, but a choice:
 
-| `DOCKER_CODE_MODELS_GPU` | Wirkung |
+| `DOCKER_CODE_MODELS_GPU` | Effect |
 |---|---|
-| *ungesetzt* / `auto` | GPU nur, wenn Docker die `nvidia`-Runtime meldet — Standard |
-| `1` | `--gpus all` erzwingen, auch wenn die Erkennung nichts findet |
-| `device=0` | an eine bestimmte NVIDIA-Karte binden (wird unverändert an `--gpus` gereicht) |
-| `rocm` | **AMD**: `--device /dev/kfd --device /dev/dri` **und** das Image `ollama/ollama:rocm` |
-| `0` | CPU erzwingen |
+| *unset* / `auto` | GPU only if Docker reports `nvidia` runtime — Default |
+| `1` | Force `--gpus all` even if detection finds nothing |
+| `device=0` | Bind to a specific NVIDIA card (passed unchanged to `--gpus`) |
+| `rocm` | **AMD**: `--device /dev/kfd --device /dev/dri` **and** the image `ollama/ollama:rocm` |
+| `0` | Force CPU |
 
-Alles davon wirkt beim **Erzeugen** des Containers. Nach jeder Änderung also:
+All of this takes effect when **creating** the container. So after each change:
 
 ```bash
 docker-code models down
 DOCKER_CODE_MODELS_GPU=rocm docker-code models up
 ```
 
-Dauerhaft gehört die Variable in die `.bashrc` — sie ist eine Einstellung der Modelldienste, nicht
-der Session, und hat deshalb **keine** `DOCKER_CODE_<AGENT>_`-Form.
+The variable permanently belongs in the `.bashrc` — it is a setting of the model services, not the session, and therefore has **no** `DOCKER_CODE_<AGENT>_` form.
 
-### NVIDIA unter Linux
+### NVIDIA on Linux
 
-1. Ein NVIDIA-Treiber auf dem **Host** (nicht im Container). `nvidia-smi` muss auf dem Host laufen.
-2. Das **NVIDIA Container Toolkit**, damit Docker die Karte überhaupt weiterreichen kann:
+1. An NVIDIA driver on the **host** (not in the container). `nvidia-smi` must be running on the host.
+2. The **NVIDIA Container Toolkit**, so that Docker can pass the card on at all:
 
 ```bash
-# Debian/Ubuntu — Paketquelle einrichten, siehe NVIDIA-Doku für die aktuelle Zeile
+# Debian/Ubuntu—configure the repository; consult NVIDIA documentation for the current command
 sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-3. Genug VRAM. Faustregel für `qwen2.5-coder` in der Standard-Quantisierung: `7b` ~5 GB, `14b` ~9 GB,
-   `32b` ~20 GB. Passt das Modell nicht ganz hinein, lädt Ollama es teilweise — dann steht in
-   `ollama ps` etwas wie `45%/55% CPU/GPU`, und die Geschwindigkeit liegt dazwischen.
+3. Enough VRAM. Rule of thumb for `qwen2.5-coder` in standard quantization: `7b` ~5 GB, `14b` ~9 GB,
+   `32b` ~20GB. If the model doesn't fit all the way in, Ollama will partially load it - then it's ready
+   `ollama ps` something like `45%/55% CPU/GPU`, and the speed is in between.
 
-Erkannt statt angenommen, weil eine GPU anzufordern, die es nicht gibt, ein **harter Startfehler**
-ist:
+Detected instead of accepted because requesting a GPU that doesn't exist is a **hard boot error**:
 
 ```
 docker: Error response from daemon: failed to discover GPU vendor from CDI:
         no known GPU vendor found
 ```
 
-Die Erkennung sieht die Runtime, die das Container Toolkit registriert. Ein Host, der nur über CDI
-verdrahtet ist, hat keine solche Runtime — dort findet `auto` nichts und du brauchst
-`DOCKER_CODE_MODELS_GPU=1`.
+The discovery sees the runtime registering the Container Toolkit. A host that is only wired via CDI has no such runtime - `auto` will not find anything there and you need `DOCKER_CODE_MODELS_GPU=1`.
 
 ---
 
-### AMD unter Linux (ROCm)
+### AMD on Linux (ROCm)
 
-Der ganze Weg in drei Zeilen — mehr ist es nicht, wenn die Karte von ROCm unterstützt wird:
+All the way in three lines — that's all it takes if the card is supported by ROCm:
 
 ```bash
 docker-code models down
 DOCKER_CODE_MODELS_GPU=rocm docker-code models up
-docker-code models status          # muss "computing on rocm" sagen
+docker-code models status          # Must report "computing on rocm"
 ```
 
-`rocm` setzt **beides** auf einmal, und beides ist nötig:
+`rocm` sets **both** at once, and both are necessary:
 
 ```
---device /dev/kfd --device /dev/dri      die Karte in den Container
-ollama/ollama:rocm                       das Image, das die ROCm-Bibliotheken enthält
+--device /dev/kfd --device /dev/dri      pass the GPU into the container
+ollama/ollama:rocm                       image containing the ROCm libraries
 ```
 
-Das ist der Grund, warum `DOCKER_CODE_OLLAMA_IMAGE=ollama/ollama:rocm` allein nichts bringt: ohne die
-beiden Gerätedateien sieht der Container keine Karte und rechnet weiter auf der CPU — ohne Fehler,
-nur langsam. Umgekehrt genauso: Devices ohne ROCm-Image ist ebenfalls CPU.
+That's the reason why `DOCKER_CODE_OLLAMA_IMAGE=ollama/ollama:rocm` alone doesn't help: without the two device files, the container doesn't see a map and continues to calculate on the CPU - without errors, just slowly. Vice versa: Devices without ROCm image are also CPU.
 
-Das ROCm-Image ist ein paar GB größer als das Standard-Image; der erste `models up` dauert
-entsprechend. Wer eine bestimmte Version festnageln will, überschreibt es —
-`DOCKER_CODE_OLLAMA_IMAGE` schlägt die Automatik, die Devices bleiben trotzdem gesetzt.
+The ROCm image is a few GB larger than the default image; the first `models up` takes accordingly. If you want to nail down a specific version, overwrite it - `DOCKER_CODE_OLLAMA_IMAGE` beats the automatic, but the devices still remain set.
 
-#### Was der Host braucht
+#### What the host needs
 
-1. **Den amdgpu-Kerneltreiber mit KFD.** Beide Gerätedateien müssen existieren:
+1. **The amdgpu kernel driver with KFD.** Both device files must exist:
 
-   ```bash
-   ls -l /dev/kfd /dev/dri/renderD*
-   ```
+```bash ls -l /dev/kfd /dev/dri/renderD* ```
 
-   Fehlt `/dev/kfd`, ist ROCm nicht ansprechbar — das ist der Normalfall in WSL2 und in VMs ohne
-   GPU-Passthrough. `lsmod | grep amdgpu` sagt, ob der Treiber überhaupt geladen ist.
+If `/dev/kfd` is missing, ROCm is unresponsive — this is the normal case in WSL2 and in VMs without GPU passthrough. `lsmod | grep amdgpu` says whether the driver is loaded at all.
 
-2. **Kein ROCm-Userspace.** Die Bibliotheken stecken im Image; auf dem Host muss nichts von AMD
-   installiert sein. (`rocm-smi` ist trotzdem praktisch, ist aber nur ein Monitoring-Werkzeug.)
+2. **No ROCm userspace.** The libraries are in the image; Nothing from AMD has to be on the host
+   be installed. (`rocm-smi` is still handy, but it's just a monitoring tool.)
 
-3. **Eine Karte, die ROCm kennt** — grob: Vega (gfx900) und alles danach. Ältere Karten (Polaris,
-   RX 5xx) laufen nicht, dort bleibt nur die CPU. Was Ollama akzeptiert, steht in seiner
-   [GPU-Doku](https://github.com/ollama/ollama/blob/main/docs/gpu.md); Karten, die knapp danebenliegen,
-   rettet `HSA_OVERRIDE_GFX_VERSION` (unten).
+3. **A card that knows ROCm** — roughly: Vega (gfx900) and everything after that. Older maps (Polaris,
+   RX 5xx) don't run, only the CPU remains there. What Ollama accepts is in his
+   [GPU Documentation](https://github.com/ollama/ollama/blob/main/docs/gpu.md); Cards that are just off the mark
+   saves `HSA_OVERRIDE_GFX_VERSION` (below).
 
-4. **Genug VRAM**, dieselbe Faustregel wie bei NVIDIA: `7b` ~5 GB, `14b` ~9 GB, `32b` ~20 GB. Eine
-   iGPU rechnet mit dem, was ihr das BIOS als UMA-Speicher zuteilt — dort ist die kleine Variante
-   meist die einzige, die vollständig hineinpasst.
+4. **Enough VRAM**, same rule of thumb as NVIDIA: `7b` ~5GB, `14b` ~9GB, `32b` ~20GB. One
+   iGPU calculates with what the BIOS allocates to it as UMA memory - there is the small version
+   usually the only one that fits completely.
 
-#### Die Variablen
+#### The variables
 
-Vier Knöpfe, alle für den Ollama-Container, alle wirksam beim `models up`:
+Four buttons, all for the Ollama container, all effective on the `models up`:
 
-| Variable | Beispiel | Wirkung |
+| variable | Example | Effect |
 |---|---|---|
-| `DOCKER_CODE_MODELS_GPU` | `rocm` | Devices + ROCm-Image, siehe oben |
-| `DOCKER_CODE_OLLAMA_IMAGE` | `ollama/ollama:<version>-rocm` | ein bestimmtes Image statt `:rocm` |
-| `DOCKER_CODE_OLLAMA_ENV` | `"HSA_OVERRIDE_GFX_VERSION=11.0.0"` | Umgebung **im** Ollama-Daemon, mit Leerzeichen getrennt |
-| `DOCKER_CODE_OLLAMA_ARGS` | `"--security-opt seccomp=unconfined"` | beliebige weitere `docker run`-Argumente |
+| `DOCKER_CODE_MODELS_GPU` | `rocm` | Devices + ROCm image, see above |
+| `DOCKER_CODE_OLLAMA_IMAGE` | `ollama/ollama:<version>-rocm` | a specific image instead of `:rocm` |
+| `DOCKER_CODE_OLLAMA_ENV` | `"HSA_OVERRIDE_GFX_VERSION=11.0.0"` | Environment **in** Ollama daemon, separated by spaces |
+| `DOCKER_CODE_OLLAMA_ARGS` | `"--security-opt seccomp=unconfined"` | any other `docker run` arguments |
 
-Ein vollständiger Block für die `.bashrc`, hier für eine RX 6700 XT:
+A complete block for the `.bashrc`, here for an RX 6700 XT:
 
 ```bash
 export DOCKER_CODE_MODELS_GPU=rocm
 export DOCKER_CODE_OLLAMA_ENV="HSA_OVERRIDE_GFX_VERSION=10.3.0"
 ```
 
-Danach einmal `docker-code models down && docker-code models up`, und jede Session nimmt die Karte.
+Then `docker-code models down && docker-code models up` once, and each session takes the card.
 
-#### `HSA_OVERRIDE_GFX_VERSION` — der Knopf, an dem es meistens hängt
+#### `HSA_OVERRIDE_GFX_VERSION` — the button where it usually hangs
 
-ROCm bedient nur eine Liste von ISA-Versionen. Steht die eigene Karte nicht darauf, überspringt
-Ollama sie kommentarlos und rechnet auf der CPU. Der Override erzählt ROCm eine andere Version — bei
-Karten derselben Generation funktioniert das zuverlässig.
+ROCm only serves a list of ISA versions. If your own card is not on it, Ollama skips it without comment and calculates on the CPU. The override tells ROCm a different version - it works reliably on cards of the same generation.
 
-Erst nachsehen, was die Karte wirklich ist:
+First check what the card really is:
 
 ```bash
-# aus dem Log des laufenden Containers — nennt gfx-Version und die unterstützte Liste
+# From the running container log—shows the gfx version and supported list
 docker logs docker-code-ollama 2>&1 | grep -iE 'amdgpu|gfx|rocm'
 
-# oder direkt aus dem Treiber, ohne Container:
+# Or directly from the driver, without a container:
 grep -r gfx_target_version /sys/class/kfd/kfd/topology/nodes/*/properties
 #   100300 -> gfx1030 -> "10.3.0"        110000 -> gfx1100 -> "11.0.0"
 #   100301 -> gfx1031 -> "10.3.0"        110300 -> gfx1103 -> "11.0.0"
 ```
 
-Die Zahl ist `major*10000 + minor*100 + step`; `100301` heißt also gfx1031. Der Override wird in
-derselben Zerlegung geschrieben (`10.3.0`), aber mit der ISA der **unterstützten** Nachbarkarte, nicht
-mit der eigenen — gfx1031 gibt sich als gfx1030 aus. Übliche Fälle:
+The number is `major*10000 + minor*100 + step`; So `100301` is called gfx1031. The override is written in the same decomposition (`10.3.0`), but with the ISA of the **supported** neighbor card, not its own — gfx1031 masquerades as gfx1030. Common cases:
 
-| Karte | ISA | `HSA_OVERRIDE_GFX_VERSION` |
+| map | ISA | `HSA_OVERRIDE_GFX_VERSION` |
 |---|---|---|
-| RX 7900 XTX / XT / GRE | gfx1100 | nicht nötig |
-| RX 7800 XT / 7700 XT | gfx1101 | meist nicht nötig, sonst `11.0.0` |
+| RX 7900 XTX/XT/GRE | gfx1100 | not necessary |
+| RX 7800 XT / 7700 XT | gfx1101 | usually not necessary, otherwise `11.0.0` |
 | RX 7600 (XT) | gfx1102 | `11.0.0` |
-| RX 6800 / 6900 / 6950 XT | gfx1030 | nicht nötig |
+| RX 6800 / 6900 / 6950 XT | gfx1030 | not necessary |
 | RX 6700 (XT) / 6750 XT | gfx1031 | `10.3.0` |
 | RX 6600 (XT) / 6650 XT | gfx1032 | `10.3.0` |
 | RX 6500 XT / 6400 | gfx1034 | `10.3.0` |
 | Radeon 780M / 760M (iGPU) | gfx1103 | `11.0.0` |
-| RX 5700 (XT) | gfx1010 | `10.3.0`, funktioniert nicht immer |
-| Vega 56/64, Radeon VII, MI-Karten | gfx900/906 | nicht nötig |
+| RX 5700 (XT) | gfx1010 | `10.3.0`, doesn't always work |
+| Vega 56/64, Radeon VII, MI cards | gfx900/906 | not necessary |
 
-#### Mehrere Karten, iGPU im Weg, rootless Docker
+#### Multiple cards, iGPU in the way, rootless Docker
 
 ```bash
-# nur die zweite Karte benutzen (der NVIDIA-Weg "device=0" gilt hier nicht):
+# Use only the second GPU (the NVIDIA "device=0" syntax does not apply here):
 export DOCKER_CODE_OLLAMA_ENV="HIP_VISIBLE_DEVICES=1"
 
-# typischer Ryzen-Desktop: die iGPU meldet sich als Karte 0 und ist zu schwach —
-# dGPU festnageln und gleich die passende ISA mitgeben:
+# Typical Ryzen desktop: the weak iGPU appears as device 0; select the dGPU and its ISA:
 export DOCKER_CODE_OLLAMA_ENV="HIP_VISIBLE_DEVICES=1 HSA_OVERRIDE_GFX_VERSION=11.0.0"
 
-# rootless Docker: root im Container ist kein root auf dem Host, also müssen die
-# Gruppen der Gerätedateien mit hinein:
+# Rootless Docker: container root is not host root, so add the device-file groups:
 export DOCKER_CODE_OLLAMA_ARGS="--group-add $(getent group render | cut -d: -f3) --group-add $(getent group video | cut -d: -f3)"
 
-# ältere Kernel/Docker-Kombinationen, bei denen ROCm am seccomp-Profil scheitert:
+# Older kernel/Docker combinations where ROCm fails because of the seccomp profile:
 export DOCKER_CODE_OLLAMA_ARGS="--security-opt seccomp=unconfined"
 ```
 
-#### Prüfen, Schritt für Schritt
+#### Check, step by step
 
 ```bash
-# 1. Sieht der Host die Karte?
+# 1. Can the host see the GPU?
 ls -l /dev/kfd /dev/dri
 
-# 2. Kann Docker die Gerätedateien durchreichen?
+# 2. Can Docker pass through the device files?
 docker run --rm --device /dev/kfd --device /dev/dri alpine ls -l /dev/kfd
 
-# 3. Sieht der Ollama-Container sie?
+# 3. Can the Ollama container see it?
 docker exec docker-code-ollama ls -l /dev/kfd
 
-# 4. Worauf hat Ollama sich beim Start festgelegt?
+# 4. Which backend did Ollama select at startup?
 docker logs docker-code-ollama 2>&1 | grep "inference compute"
 #   library=rocm -> GPU        library=cpu -> CPU
 ```
 
-Auslastung live, ohne dass `rocm-smi` installiert sein muss:
+Utilization live without `rocm-smi` having to be installed:
 
 ```bash
 watch -n 1 'cat /sys/class/drm/card*/device/gpu_busy_percent'
 ```
 
-#### Wenn es nicht greift
+#### If it doesn't work
 
-| Beobachtung | Ursache |
+| observation | Cause |
 |---|---|
-| `docker run` bricht mit `error gathering device information ... /dev/kfd` ab | die Gerätedatei gibt es nicht — amdgpu nicht geladen, Kernel ohne KFD, WSL2 oder VM ohne Passthrough |
-| Log: `amdgpu is not supported` mit einer Liste `supported types` | die ISA der Karte steht nicht drauf → `HSA_OVERRIDE_GFX_VERSION` aus der Tabelle |
-| `models status` zeigt `/dev/kfd`, aber `computing on cpu` | Standard-Image statt `:rocm`. Die `IMAGE`-Spalte von `models status` sagt, was tatsächlich läuft |
-| `Permission denied` auf `/dev/kfd` | rootless Docker → `--group-add` wie oben |
-| die iGPU antwortet statt der dGPU | `HIP_VISIBLE_DEVICES=<index>` |
-| hängt oder stürzt unter Last ab | meist zu alter Kernel bzw. amdgpu-Firmware; zum Eingrenzen ein kleines Modell (`0.5b`) versuchen |
+| `docker run` breaks with `error gathering device information ... /dev/kfd` | the device file does not exist — amdgpu not loaded, kernel without KFD, WSL2 or VM without passthrough |
+| Log: `amdgpu is not supported` with a list `supported types` | the card's ISA is not on it → `HSA_OVERRIDE_GFX_VERSION` from the table |
+| `models status` shows `/dev/kfd`, but `computing on cpu` | Standard image instead of `:rocm`. The `IMAGE` column of `models status` says what's actually running |
+| `Permission denied` to `/dev/kfd` | rootless Docker → `--group-add` as above |
+| the iGPU responds instead of the dGPU | `HIP_VISIBLE_DEVICES=<index>` |
+| hangs or crashes under load | usually too old kernel or amdgpu firmware; to narrow it down, try a small model (`0.5b`) |
 
-### macOS und Windows
+### macOS and Windows
 
-**macOS**: Docker Desktop reicht die Apple-GPU **nicht** in Container durch. Ein containerisiertes
-Ollama rechnet dort immer auf der CPU. Wer Metal-Beschleunigung will, betreibt Ollama nativ auf dem
-Mac und zeigt docker-code darauf — siehe [Vom Host aus](#vom-host-aus), nur andersherum:
-`DOCKER_CODE_OLLAMA_CONTAINER` bleibt ungenutzt und die Tools bekommen die Host-Adresse.
+**macOS**: Docker Desktop **does not** pass the Apple GPU into containers. A containerized Ollama always calculates on the CPU. If you want Metal acceleration, run Ollama natively on the Mac and show docker code on it - see [From the host](#from-the-host), only the other way around: `DOCKER_CODE_OLLAMA_CONTAINER` remains unused and the tools get the host address.
 
-**WSL2**: NVIDIA funktioniert dort, AMD in aller Regel nicht — es gibt kein `/dev/kfd`, und der
-Windows-Weg über `/dev/dxg` wird von diesem Image nicht bedient. Bleibt: Ollama nativ unter Windows
-betreiben und die Tools dorthin zeigen.
+**WSL2**: NVIDIA works there, AMD generally doesn't - there is no `/dev/kfd`, and the Windows route via `/dev/dxg` is not served by this image. What remains: Run Ollama natively under Windows and point the tools there.
 
-### Testen, ob die GPU wirklich benutzt wird
+### Testing whether the GPU is actually being used
 
-Der schnellste Weg:
+The fastest way:
 
 ```bash
 docker-code models status
@@ -476,100 +414,89 @@ gpu:      requested at start (--device /dev/kfd, the AMD/ROCm path)
 ollama:   computing on rocm (AMD-Radeon-RX-7900-XTX)
 ```
 
-Steht dort stattdessen `not requested` oder `computing on cpu`, läuft es auf der CPU. Die beiden
-Zeilen sind absichtlich getrennt: ein Container *kann* mit der Karte gestartet worden sein und Ollama
-trotzdem auf der CPU rechnen — zu alter Treiber, falsches Image, nicht unterstützte ISA. Dann steht
-da `requested at start` und `computing on cpu`, und das ist genau die Diagnose.
+If it says `not requested` or `computing on cpu` instead, it runs on the CPU. The two lines are intentionally separated: a container *can* have been started with the card and Ollama is still running on the CPU — driver too old, wrong image, unsupported ISA. Then it says `requested at start` and `computing on cpu`, and that is exactly the diagnosis.
 
-Wenn du es genauer wissen willst, von außen nach innen — hier für NVIDIA, die AMD-Variante steht
-[eine Sektion weiter oben](#prüfen-schritt-für-schritt):
+If you want to know it in more detail, from the outside in - here for NVIDIA, the AMD variant is [one section above] (#check-step-by-step):
 
 ```bash
-# 1. Sieht der Host die Karte?
+# 1. Can the host see the GPU?
 nvidia-smi
 
-# 2. Kann Docker sie durchreichen?
+# 2. Can Docker pass it through?
 docker run --rm --gpus all ubuntu:24.04 nvidia-smi
 
-# 3. Sieht der Ollama-Container sie?
+# 3. Can the Ollama container see it?
 docker exec docker-code-ollama nvidia-smi
 
-# 4. Worauf hat Ollama sich beim Start festgelegt?
+# 4. Which backend did Ollama select at startup?
 docker logs docker-code-ollama 2>&1 | grep "inference compute"
 #   library=cuda  -> GPU        library=cpu -> CPU
 ```
 
-**Der eigentliche Beweis** ist aber, worauf ein geladenes Modell tatsächlich rechnet. Dafür muss es
-geladen sein — also erst eine Anfrage stellen, dann nachsehen:
+**The real proof** is what a loaded model actually calculates. To do this it has to be loaded - so first make a request, then check:
 
 ```bash
-docker-code models run qwen2.5-coder:14b "hi"      # lädt das Modell
+docker-code models run qwen3:14b "hi"      # Load the model
 docker exec docker-code-ollama ollama ps
 ```
 
 ```
 NAME                 ID              SIZE     PROCESSOR    CONTEXT    UNTIL
-qwen2.5-coder:14b    xxxxxxxxxxxx    10 GB    100% GPU     4096       4 minutes from now
+qwen3:14b    xxxxxxxxxxxx    10 GB    100% GPU     4096       4 minutes from now
 ```
 
-Die Spalte `PROCESSOR` ist die Antwort: `100% GPU`, `100% CPU`, oder eine Aufteilung wie
-`45%/55% CPU/GPU`, wenn das Modell nicht ganz ins VRAM passt. Ohne geladenes Modell ist die Liste
-leer — Ollama entlädt nach einigen Minuten Leerlauf.
+The `PROCESSOR` column is the answer: `100% GPU`, `100% CPU`, or a split like `45%/55% CPU/GPU` if the model doesn't quite fit in VRAM. Without a loaded model, the list is empty — Ollama unloads after a few minutes of idleness.
 
-Beim Zusehen in Echtzeit:
+When watching in real time:
 
 ```bash
 watch -n 1 nvidia-smi                                        # NVIDIA
-watch -n 1 'cat /sys/class/drm/card*/device/gpu_busy_percent' # AMD, ohne rocm-smi
+watch -n 1 'cat /sys/class/drm/card*/device/gpu_busy_percent' # AMD, without rocm-smi
 ```
 
-### Wenn die GPU nicht benutzt wird
+### When the GPU is not in use
 
-| Beobachtung | Ursache |
+| observation | Cause |
 |---|---|
-| `models status` sagt `not requested` | die Erkennung fand keine `nvidia`-Runtime → `DOCKER_CODE_MODELS_GPU=1` (NVIDIA) bzw. `=rocm` (AMD), dann `models down && models up` |
-| Schritt 2 oben scheitert | Container Toolkit fehlt oder Docker wurde nach `nvidia-ctk` nicht neu gestartet |
-| Schritt 3 scheitert, Schritt 2 klappt | der Container lief schon vor der Änderung — `docker-code models down && docker-code models up` |
-| `requested at start`, aber `computing on cpu` | NVIDIA: Treiber zu alt für die CUDA-Version im Image. AMD: siehe die [AMD-Tabelle](#wenn-es-nicht-greift) — meist Image oder ISA. `docker logs docker-code-ollama` nennt den Grund |
-| `PROCESSOR` zeigt eine Aufteilung | Modell passt nicht ins VRAM → kleinere Variante (`7b`) oder stärkere Quantisierung |
+| `models status` says `not requested` | The detection did not find any `nvidia` runtime → `DOCKER_CODE_MODELS_GPU=1` (NVIDIA) or `=rocm` (AMD), then `models down && models up` |
+| Step 2 above fails | Container Toolkit is missing or Docker did not restart after `nvidia-ctk` |
+| Step 3 fails, step 2 works | the container was already running before the change — `docker-code models down && docker-code models up` |
+| `requested at start`, but `computing on cpu` | NVIDIA: Driver too old for CUDA version in image. AMD: see the [AMD table](#if-it-doesnt-work) — usually Image or ISA. `docker logs docker-code-ollama` gives the reason |
+| `PROCESSOR` shows a split | Model does not fit into VRAM → smaller version (`7b`) or stronger quantization |
 
 ---
 
-## Von Hand konfigurieren
+## Configure by hand
 
-Wer die Werte lieber selbst in die Konfiguration des Tools schreibt — im TUI, in einer Config-Datei —
-braucht die Tabelle oben. Damit die Adressen im Container überhaupt erreichbar sind, muss die Session
-trotzdem mit `DOCKER_CODE_LOCAL=1` laufen: das ist es, was den Container ans Modellnetz hängt und die
-Ports auf `localhost` legt. Den Modellnamen kannst du dann weglassen:
+If you prefer to write the values ​​into the tool's configuration yourself - in the TUI, in a config file - you need the table above. In order for the addresses in the container to be reachable at all, the session must still run with `DOCKER_CODE_LOCAL=1`: this is what attaches the container to the model network and sets the ports to `localhost`. You can then leave out the model name:
 
 ```bash
 DOCKER_CODE_LOCAL=1 qwen-docker
 ```
 
-Wenn du in einem Tool nach einem API-Key gefragt wirst: **`docker-code-local`**.
+When asked for an API key in a tool: **`docker-code-local`**.
 
 ### Qwen Code
 
 ```bash
-DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b qwen-docker
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b qwen-docker
 ```
 
-Von Hand entspricht das:
+By hand this corresponds to:
 
 ```
 OPENAI_BASE_URL=http://localhost:11434/v1
 OPENAI_API_KEY=docker-code-local
-OPENAI_MODEL=qwen2.5-coder:14b
+OPENAI_MODEL=qwen3:14b
 ```
 
 ### OpenAI Codex CLI
 
 ```bash
-DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b codex-docker
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b codex-docker
 ```
 
-Der Provider ist bereits in `~/docker-code/codex/.codex/config.toml` hinterlegt und wird per
-`--config model_provider=dockercode --model qwen2.5-coder:14b` ausgewählt. Von Hand:
+The provider is already stored in `~/docker-code/codex/.codex/config.toml` and is selected via `--config model_provider=dockercode --model qwen3:14b`. By hand:
 
 ```toml
 [model_providers.dockercode]
@@ -583,49 +510,41 @@ wire_api = "responses"
 OPENAI_API_KEY=docker-code-local
 ```
 
-`wire_api = "responses"`, nicht `"chat"` — Codex hat das Chat-Completions-Format entfernt und lädt
-eine Config, die es noch nennt, gar nicht erst.
+`wire_api = "responses"`, not `"chat"` — Codex has removed the chat completions format and won't even load a config that still names it.
 
 ### Claude Code
 
 ```bash
-DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b claude-docker
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b claude-docker
 ```
 
-Ollama spricht seit Januar 2026 selbst das Anthropic-Format, es geht also direkt dorthin — ohne
-Gateway, und ohne `/v1` am Ende:
+Ollama has been speaking the Anthropic format since January 2026, so it goes straight there — without a gateway, and without `/v1` at the end:
 
 ```
 ANTHROPIC_BASE_URL=http://localhost:11434
 ANTHROPIC_AUTH_TOKEN=docker-code-local
-ANTHROPIC_MODEL=qwen2.5-coder:14b
-ANTHROPIC_SMALL_FAST_MODEL=qwen2.5-coder:14b
+ANTHROPIC_MODEL=qwen3:14b
+ANTHROPIC_SMALL_FAST_MODEL=qwen3:14b
 ```
 
-`ANTHROPIC_SMALL_FAST_MODEL` ist kein Tippfehler: Claude Code benutzt dafür ein zweites Modell für
-Hintergrundaufgaben und würde sonst versuchen, dieses in der Cloud zu erreichen.
+`ANTHROPIC_SMALL_FAST_MODEL` is not a typo: Claude Code uses a second model for background tasks and would otherwise try to achieve this in the cloud.
 
 ### Gemini CLI
 
 ```bash
-DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b gemini-docker
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b gemini-docker
 ```
 
-Als einziges der Tools läuft es über das LiteLLM-Gateway, weil es nur Googles eigenes Format spricht:
+It is the only tool that runs over the LiteLLM gateway because it only speaks Google's own format:
 
 ```
 GOOGLE_GEMINI_BASE_URL=http://localhost:4000
 GEMINI_API_KEY=docker-code-local
 ```
 
-Die **Wurzel** des Gateways, nicht `/gemini`. Das `@google/genai`-SDK hängt selbst
-`/v1beta/models/<modell>:generateContent` an, und genau diesen Pfad bedient LiteLLM aus seiner
-Modellliste. `/gemini` ist ein Pass-Through zu Google AI Studio — die Anfrage ginge ins Internet
-statt zu Ollama.
+The **root** of the gateway, not `/gemini`. The `@google/genai` SDK itself appends `/v1beta/models/<model>:generateContent`, and this is exactly the path LiteLLM serves from its model list. `/gemini` is a pass-through to Google AI Studio — the request would go to the Internet instead of to Ollama.
 
-Headless (`-p`) nimmt Gemini CLI die Auth-Methode nur aus den Settings, nicht aus der Umgebung.
-Deshalb zeigt der Wrapper zusätzlich `GEMINI_CLI_SYSTEM_SETTINGS_PATH` auf eine Datei im Image, die
-`gemini-api-key` auswählt. Wer von Hand konfiguriert, setzt stattdessen in `~/.gemini/settings.json`:
+Headless (`-p`) Gemini CLI takes the auth method only from the settings, not from the environment. Therefore, the wrapper additionally points `GEMINI_CLI_SYSTEM_SETTINGS_PATH` to a file in the image that selects `gemini-api-key`. If you configure by hand, set in `~/.gemini/settings.json` instead:
 
 ```json
 { "security": { "auth": { "selectedType": "gemini-api-key" } } }
@@ -634,15 +553,13 @@ Deshalb zeigt der Wrapper zusätzlich `GEMINI_CLI_SYSTEM_SETTINGS_PATH` auf eine
 ### Mistral Vibe
 
 ```bash
-DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b mistral-docker
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b mistral-docker
 ```
 
-Vibe kennt beliebige OpenAI-kompatible Provider — einer für llama.cpp ist ab Werk eingebaut. Der
-Wrapper legt für die Dauer der Session einen Provider `dockercode` an; dauerhaft gehört er in
-`~/docker-code/mistral/.vibe/config.toml`:
+Vibe knows any OpenAI-compatible providers - one for llama.cpp is installed ex works. The wrapper creates a provider `dockercode` for the duration of the session; permanently it belongs in `~/docker-code/mistral/.vibe/config.toml`:
 
 ```toml
-active_model = "qwen2.5-coder:14b"
+active_model = "qwen3:14b"
 
 [[providers]]
 name = "dockercode"
@@ -651,33 +568,28 @@ api_key_env_var = "MISTRAL_API_KEY"
 api_style = "openai"
 
 [[models]]
-name = "qwen2.5-coder:14b"
+name = "qwen3:14b"
 provider = "dockercode"
 ```
 
-`active_model` steht **vor** den Tabellen — sonst zieht TOML den Schlüssel in die letzte Tabelle.
-Provider- und Modell-Listen werden über den Namen zusammengeführt, nicht ersetzt: Mistrals eigener
-Provider bleibt daneben bestehen, du wechselst mit `active_model` zwischen lokal und Cloud.
+`active_model` is **before** the tables — otherwise TOML pulls the key into the last table. Provider and model lists are merged by name, not replaced: Mistral's own provider remains, you switch between local and cloud with `active_model`.
 
-Jedes Feld der Konfiguration lässt sich auch als Umgebungsvariable setzen — Präfix `VIBE_`, für
-Listen als JSON. Genau das tut der Wrapper:
+Each field of the configuration can also be set as an environment variable — prefix `VIBE_`, for lists as JSON. This is exactly what the wrapper does:
 
 ```
 VIBE_PROVIDERS=[{"name":"dockercode","api_base":"http://localhost:11434/v1","api_key_env_var":"MISTRAL_API_KEY","api_style":"openai"}]
-VIBE_MODELS=[{"name":"qwen2.5-coder:14b","provider":"dockercode"}]
-VIBE_ACTIVE_MODEL=qwen2.5-coder:14b
+VIBE_MODELS=[{"name":"qwen3:14b","provider":"dockercode"}]
+VIBE_ACTIVE_MODEL=qwen3:14b
 MISTRAL_API_KEY=docker-code-local
 ```
 
 ### OpenCode
 
 ```bash
-DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b opencode-docker
+DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3:14b opencode-docker
 ```
 
-OpenCode bietet nur Modelle an, die ein Provider-Block ausdrücklich deklariert. Für die Dauer der
-Session erledigt das der Wrapper über `OPENCODE_CONFIG_CONTENT`. Dauerhaft gehört es in
-`~/docker-code/opencode/.config/opencode/opencode.json`:
+OpenCode only offers models that a provider block explicitly declares. For the duration of the session, the wrapper does this via `OPENCODE_CONFIG_CONTENT`. It belongs permanently in `~/docker-code/opencode/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -691,35 +603,31 @@ Session erledigt das der Wrapper über `OPENCODE_CONFIG_CONTENT`. Dauerhaft geh�
         "apiKey": "docker-code-local"
       },
       "models": {
-        "qwen2.5-coder:14b": { "name": "Qwen2.5 Coder 14B" }
+        "qwen3:14b": { "name": "Qwen2.5 Coder 14B" }
       }
     }
   }
 }
 ```
 
-Danach ist das Modell als `dockercode/qwen2.5-coder:14b` auswählbar.
+The model can then be selected as `dockercode/qwen3:14b`.
 
-### Cursor CLI und GitHub Copilot CLI
+### Cursor CLI and GitHub Copilot CLI
 
-Beide rechnen serverseitig beim Anbieter; es gibt keinen Endpunkt, den man umbiegen könnte.
-`DOCKER_CODE_LOCAL=1` sagt das und startet die Session trotzdem, statt schweigend nichts zu tun.
+Both calculate on the server side of the provider; there is no end point to turn around. `DOCKER_CODE_LOCAL=1` says this and starts the session anyway instead of doing nothing in silence.
 
 ---
 
-## Vom Host aus
+## From the host
 
-Standardmäßig veröffentlichen die Dienste keinen Port — die Agents erreichen sie über das Docker-Netz.
-Wer sie von der Maschine selbst ansprechen will (ein Tool außerhalb von docker-code, ein Skript, ein
-`curl`):
+By default, the services do not publish a port — the agents reach them via the Docker network. If you want to address them from the machine itself (a tool outside of docker code, a script, a `curl`):
 
 ```bash
 docker-code models down
 DOCKER_CODE_MODELS_PUBLISH=1 docker-code models up
 ```
 
-Dann liegen sie auf `127.0.0.1:11434` und `127.0.0.1:4000` — nur Loopback, nicht im Netz. Die URLs
-aus der Tabelle oben gelten unverändert, mit `127.0.0.1` statt `localhost`:
+Then they are on `127.0.0.1:11434` and `127.0.0.1:4000` - only loopback, not in the network. The URLs from the table above apply unchanged, with `127.0.0.1` instead of `localhost`:
 
 ```bash
 curl http://127.0.0.1:11434/v1/models
@@ -727,16 +635,15 @@ curl http://127.0.0.1:11434/v1/models
 curl http://127.0.0.1:11434/v1/chat/completions \
   -H 'content-type: application/json' \
   -H 'authorization: Bearer docker-code-local' \
-  -d '{"model":"qwen2.5-coder:14b","messages":[{"role":"user","content":"say OK"}]}'
+  -d '{"model":"qwen3:14b","messages":[{"role":"user","content":"say OK"}]}'
 
 curl http://127.0.0.1:4000/v1/models \
   -H 'authorization: Bearer docker-code-local'
 ```
 
-LiteLLM braucht nach dem Start etwa 15 Sekunden, bis es antwortet; davor kommt kein `401`, sondern
-gar keine Verbindung.
+LiteLLM takes about 15 seconds to respond after starting; Before that there is no `401`, but no connection at all.
 
-Damit die Veröffentlichung dauerhaft gilt, gehört die Variable in die Shell-Startdatei:
+To make the publication permanent, the variable belongs in the shell start file:
 
 ```bash
 export DOCKER_CODE_MODELS_PUBLISH=1
@@ -744,23 +651,18 @@ export DOCKER_CODE_MODELS_PUBLISH=1
 
 ---
 
-## Was läuft
+## What's going on
 
-Zwei Container auf einem eigenen Netz `docker-code-net`:
+Two containers on their own network `docker-code-net`:
 
-| Container | Image | Aufgabe |
+| Containers | Image | Task |
 |---|---|---|
-| `docker-code-ollama` | `ollama/ollama` | hält die Gewichte, serviert OpenAI-, Anthropic- und Responses-Format |
-| `docker-code-litellm` | `ghcr.io/berriai/litellm:main-stable` | übersetzt in Formate, die Ollama nicht selbst spricht |
+| `docker-code-ollama` | `ollama/ollama` | holds the weights, serves OpenAI, Anthropic and Responses format |
+| `docker-code-litellm` | `ghcr.io/berriai/litellm:main-stable` | translated into formats that Ollama does not speak himself |
 
-Eine NVIDIA-Karte wird benutzt, wenn Docker eine gemeldet hat (`--gpus all`), sonst läuft es auf der
-CPU. Das wird erkannt, nicht angenommen: eine GPU anzufordern, die es nicht gibt, ist ein harter
-`docker run`-Fehler. Eine AMD-Karte wird **nicht** automatisch genommen, weil sie ein zweites, deutlich
-größeres Image bedeutet — `DOCKER_CODE_MODELS_GPU=rocm` sagt ja dazu, und dann steht in der Tabelle
-oben `ollama/ollama:rocm`. Erzwingen lässt sich CPU-Betrieb mit `DOCKER_CODE_MODELS_GPU=0`.
+An NVIDIA card is used if Docker reported one (`--gpus all`), otherwise it runs on the CPU. This is recognized, not assumed: requesting a GPU that doesn't exist is a hard `docker run` error. An AMD card is **not** automatically accepted because it means a second, significantly larger image — `DOCKER_CODE_MODELS_GPU=rocm` says yes to that, and then the table above says `ollama/ollama:rocm`. CPU operation can be forced with `DOCKER_CODE_MODELS_GPU=0`.
 
-Die Gateway-Konfiguration liegt in `~/docker-code/models/litellm/config.yaml`, wird beim ersten Start
-geschrieben und danach **nie wieder angefasst**. Sie enthält einen Wildcard-Eintrag:
+The gateway configuration is in `~/docker-code/models/litellm/config.yaml`, is written at the first start and then **never touched again**. It contains a wildcard entry:
 
 ```yaml
 model_list:
@@ -770,135 +672,111 @@ model_list:
       api_base: "http://docker-code-ollama:11434"
 ```
 
-Dadurch ist jedes Modell, das du mit `docker-code models pull` holst, sofort auch über das Gateway
-erreichbar — ohne weitere Zeile in dieser Datei und ohne Neustart.
+This means that every model that you get with `docker-code models pull` is immediately accessible via the gateway - without another line in this file and without a restart.
 
-## Die localhost-Brücke
+## The localhost bridge
 
-Der Container bekommt beim Start zwei Weiterleitungen auf `127.0.0.1`:
+When the container starts, it gets two redirects to `127.0.0.1`:
 
 ```
 localhost:11434  ->  docker-code-ollama:11434
 localhost:4000   ->  docker-code-litellm:4000
 ```
 
-Das ist kein Umweg, sondern der Punkt. Mehrere dieser Tools verdrahten `localhost` fest — Codex'
-eingebauter `--oss`-Pfad ignoriert `base_url` komplett
-([openai/codex#8240](https://github.com/openai/codex/issues/8240)), und mehr als eine
-Provider-Integration nimmt irgendwo unterhalb ihrer Konfigurationsoberfläche `127.0.0.1` an. Mit der
-Weiterleitung haben sie schlicht recht, und ein Tool, das später dazukommt, erbt dieselbe
-funktionierende Annahme.
+This is not a detour, but the point. Several of these tools hardwire `localhost` — Codex's built-in `--oss` path ignores `base_url` completely ([openai/codex#8240](https://github.com/openai/codex/issues/8240)), and more than one provider integration assumes `127.0.0.1` somewhere beneath their configuration interface. They are simply right about redirection, and a tool that comes along later inherits the same working assumption.
 
-Deshalb stehen in der Tabelle oben `localhost`-Adressen und keine Containernamen: Letztere würden
-auch funktionieren, aber nur solange das Tool sie nicht wieder durch `localhost` ersetzt.
+That's why the table above contains `localhost` addresses and not container names: the latter would also work, but only as long as the tool doesn't replace them with `localhost` again.
 
-## Modelldateien direkt
+## Direct access to model files
 
-Manches liest Modelle als Datei statt über HTTP. Dafür gibt es zwei Ordner, die mit
-`DOCKER_CODE_LOCAL=1` **read-only** unter `/models` eingehängt werden:
+Some read models as a file instead of via HTTP. There are two folders for this, which are mounted with `DOCKER_CODE_LOCAL=1` **read-only** under `/models`:
 
 ```
-~/docker-code/models/gguf/   ->  /models/gguf   (GGUF für llama.cpp & Co.)
+~/docker-code/models/gguf/   ->  /models/gguf   (GGUF for llama.cpp and similar tools)
 ~/docker-code/models/hf/     ->  /models/hf     (HuggingFace-Cache)
 ```
 
-Read-only mit Absicht: das ist das einzige Verzeichnis, das alle Agents sehen. Eine Session, die es
-überschreiben könnte, könnte jedem anderen Agent ein anderes Modell unterschieben, als er angefordert
-hat.
+Read-only by design: this is the only directory that all agents see. A session that could override it could foist a different model on any other agent than the one they requested.
 
 ---
 
-## Wenn etwas nicht antwortet
+## If something doesn't respond
 
-**„API key required" / 401 / 403** — der Key ist `docker-code-local`. Bei Ollama ist er beliebig, darf
-aber nicht leer sein; bei LiteLLM muss er genau stimmen.
+**“API key required” / 401 / 403** — the key is `docker-code-local`. With Ollama it is arbitrary, but cannot be empty; with LiteLLM it has to be exactly right.
 
-**400 vom Gateway** — falscher Key. LiteLLM antwortet auf einen fehlenden Key mit `401`, auf einen
-falschen mit `400`.
+**400 from gateway** — wrong key. LiteLLM responds to a missing key with `401`, to an incorrect one with `400`.
 
-**Verbindung abgelehnt** — läuft die Session mit `DOCKER_CODE_LOCAL=1`? Ohne das hängt der Container
-nicht am Modellnetz und es gibt keine Weiterleitung auf `localhost`. Prüfen:
+**Connection refused** — is the session running with `DOCKER_CODE_LOCAL=1`? Without this, the container does not hang on the model network and there is no redirection to `localhost`. Check:
 
 ```bash
 DOCKER_CODE_LOCAL=1 DOCKER_CODE_SHELL=1 qwen-docker -c 'curl -s http://localhost:11434/v1/models'
 ```
 
-**„model not found"** — der Name muss exakt dem entsprechen, was `docker-code models list` zeigt,
-inklusive Tag. `qwen2.5-coder` ohne `:14b` ist ein anderer Name als `qwen2.5-coder:14b`.
+**“model not found”** — the name must correspond exactly to what `docker-code models list` shows, including the tag. `qwen2.5-coder` without `:14b` is a different name than `qwen3:14b`.
 
-**Der Agent zeigt JSON, statt etwas zu tun** — so etwas:
+**The agent shows JSON instead of doing something** — something like this:
 
 ```
 ◆︎ { "name": "write_file", "arguments": { "file_path": "…", "content": "…" } }
 ```
 
-Das ist ein **Modellproblem, kein Verbindungsproblem**. Ein Agent bekommt seine Werkzeuge über
-`tools` und erwartet die Antwort im Feld `tool_calls`; ein Modell, das dafür nicht trainiert ist,
-schreibt dieselbe Struktur stattdessen als Text in `content`. Der Agent hat nichts zu parsen und
-zeigt den Text roh an. Erfundene Werkzeugnamen im JSON sind dasselbe Bild — dann hat das Modell die
-Werkzeugliste nicht mehr im Kontext.
+This is a **model problem, not a connection problem**. An agent gets its tools via `tools` and expects the answer in the `tool_calls` field; a model that is not trained for this will instead write the same structure as text to `content`. The agent has nothing to parse and displays the text raw. Invented tool names in JSON are the same picture — then the model no longer has the tool list in context.
 
-Welche Modelle das können, steht unter [Welches Modell für einen Agent](#welches-modell-für-einen-agent).
-Nachprüfen lässt es sich in einem Aufruf, ohne Agent:
+Which models can do this can be found under [Which model for an agent](#which-model-for-an-agent). You can check it in one call, without an agent:
 
 ```bash
 docker run --rm --network docker-code-net curlimages/curl -s \
   http://docker-code-ollama:11434/v1/chat/completions \
   -H 'content-type: application/json' -H 'authorization: Bearer docker-code-local' \
-  -d '{"model":"<modell>","stream":false,
+  -d '{"model":"<model>","stream":false,
        "messages":[{"role":"user","content":"Write hi into a.txt"}],
        "tools":[{"type":"function","function":{"name":"write_file",
          "parameters":{"type":"object","properties":{"file_path":{"type":"string"},
                                                      "content":{"type":"string"}}}}}]}'
 ```
 
-Kommt `"tool_calls": [...]` zurück, taugt das Modell als Agent. Steht die Funktion stattdessen als
-Text in `"content"`, taugt es nicht — daran ändert keine Einstellung in docker-code oder im Agent
-etwas.
+If `"tool_calls": [...]` comes back, the model is suitable as an agent. If the function is instead written as text in `"content"`, it is no good - no setting in the docker code or in the agent changes this.
 
-**Gemini antwortet nicht** — dort steht das Gateway dazwischen:
+**Gemini doesn't answer** — the gateway is there in between:
 
 ```bash
 docker-code models logs docker-code-litellm
 ```
 
-Der Weg ohne Agent, zum Eingrenzen:
+The way without an agent to narrow down:
 
 ```bash
 docker run --rm --network docker-code-net curlimages/curl -s \
-  "http://docker-code-litellm:4000/v1beta/models/qwen2.5-coder:14b:generateContent" \
+  "http://docker-code-litellm:4000/v1beta/models/qwen3:14b:generateContent" \
   -H "x-goog-api-key: docker-code-local" -H "content-type: application/json" \
   -d '{"contents":[{"parts":[{"text":"say OK"}]}]}'
 ```
 
-**Alles ist langsam** — vermutlich rechnet es auf der CPU. `docker-code models status` sagt es in
-zwei Zeilen; der ganze Ablauf zum Nachprüfen steht unter [GPU](#gpu).
+**Everything is slow** — it's probably processing on the CPU. `docker-code models status` says it in two lines; The whole process for checking is under [GPU](#gpu).
 
 ---
 
-## Kommandos
+## Commands
 
 ```bash
 docker-code models up            # starten (idempotent)
-docker-code models down          # stoppen und das Netz entfernen
+docker-code models down          # Stop and remove the network
 docker-code models status        # Zustand, Speicherort, Belegung
-docker-code models pull <modell>
+docker-code models pull <model>
 docker-code models list
-docker-code models rm <modell>
-docker-code models run <modell>  # direkt mit dem Modell reden, ohne Agent
+docker-code models rm <model>
+docker-code models run <model>  # Talk directly to the model, without an agent
 docker-code models logs [container]
 ```
 
-Wenn etwas nicht startet, ist das eine Warnung und keine gescheiterte Session: der Agent läuft dann
-mit seinem Cloud-Provider weiter. Ein Modell-Gateway ist weniger wert als die Session, die es sonst
-verhindern würde.
+If something doesn't start, it's a warning and not a failed session: the agent then continues to run with its cloud provider. A model gateway is worth less than the session it would otherwise prevent.
 
-## Platz
+## Disk space
 
 ```bash
 du -sh ~/docker-code/models/*
-docker-code models rm qwen2.5-coder:14b
-rm -rf ~/docker-code/models          # alles weg; beim nächsten `models up` wieder leer
+docker-code models rm qwen3:14b
+rm -rf ~/docker-code/models          # Remove everything; next `models up` starts empty
 ```
 
-Größenordnung für `qwen2.5-coder`: `0.5b` ~400 MB, `7b` ~4,7 GB, `14b` ~9 GB, `32b` ~20 GB.
+Magnitude for `qwen2.5-coder`: `0.5b` ~400 MB, `7b` ~4.7 GB, `14b` ~9 GB, `32b` ~20 GB.

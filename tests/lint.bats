@@ -69,7 +69,7 @@ EOF
     # directory, shared by every agent by definition.
     global_only=" DRY_RUN HOME "
 
-    knobs="$(sed -n '/^## Knöpfe/,/^---$/p' "${REPO_ROOT}/README.md" |
+    knobs="$(sed -n '/^## Configuration/,/^---$/p' "${REPO_ROOT}/README.md" |
         grep -oE '`[A-Z_]+=' | tr -d '`=' | sort -u)"
     [ -n "${knobs}" ]
 
