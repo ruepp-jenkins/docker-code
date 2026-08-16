@@ -172,7 +172,7 @@ models_start_ollama() {
                 # much larger image — a decision that belongs to the user. Saying so once, while the
                 # container is being created, still beats a session that is silently on the CPU.
                 warn "an AMD GPU is present (/dev/kfd), but ROCm needs its own Ollama image;"
-                warn "DOCKER_CODE_MODELS_GPU=rocm uses it — see the AMD section of LOCAL-MODELS.md."
+                warn "DOCKER_CODE_MODELS_GPU=rocm uses it — see the AMD section of docs/LOCAL-MODELS.md."
             fi
             ;;
         1|true|all)
@@ -233,11 +233,11 @@ models_start_ollama() {
         */dev/kfd*|*/dev/dri*)
             warn "that is the AMD device request failing: /dev/kfd comes from the amdgpu kernel"
             warn "driver, so 'ls -l /dev/kfd /dev/dri' on the host is the next step. DOCKER_CODE_MODELS_GPU=0"
-            warn "runs on the CPU; see the AMD section of LOCAL-MODELS.md."
+            warn "runs on the CPU; see the AMD section of docs/LOCAL-MODELS.md."
             ;;
         *GPU*|*gpu*|*nvidia*)
             warn "that is the GPU request failing. DOCKER_CODE_MODELS_GPU=0 runs on the CPU;"
-            warn "see the GPU section of LOCAL-MODELS.md for what the host needs."
+            warn "see the GPU section of docs/LOCAL-MODELS.md for what the host needs."
             ;;
     esac
     return 1
@@ -310,7 +310,8 @@ models_status() {
     # The endpoints and the key, printed rather than only documented.
     #
     # A session started with DOCKER_CODE_LOCAL=1 gets all of this set for it, but anyone configuring
-    # a tool by hand needs the key — and the first place they look is this command, not LOCAL-MODELS.md.
+    # a tool by hand needs the key — and the first place they look is this command, not
+    # docs/LOCAL-MODELS.md.
     # It is not a secret: it authenticates a container to a gateway on a private Docker network with
     # no published port, and it exists only because LiteLLM refuses to answer without one.
     echo
@@ -345,7 +346,7 @@ models_gpu_status() {
                     ;;
                 *)
                     echo "gpu:      not requested — the container was started for CPU inference"
-                    echo "          (DOCKER_CODE_MODELS_GPU=1 for NVIDIA, =rocm for AMD; see LOCAL-MODELS.md)"
+                    echo "          (DOCKER_CODE_MODELS_GPU=1 for NVIDIA, =rocm for AMD; see docs/LOCAL-MODELS.md)"
                     ;;
             esac
             ;;

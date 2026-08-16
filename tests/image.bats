@@ -82,7 +82,7 @@ BASE_DOCKERFILE="${BATS_TEST_DIRNAME}/../base/Dockerfile"
 }
 
 @test "the test stage copies everything the suite reads" {
-    for path in tests/ image/ bin/ lib/ agents/ scripts/; do
+    for path in tests/ image/ bin/ lib/ agents/ scripts/ ai/ docs/; do
         grep -q "COPY ${path}" "${BASE_DOCKERFILE}" || {
             echo "base/Dockerfile's test stage does not copy ${path}"; return 1
         }

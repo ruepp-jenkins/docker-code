@@ -992,7 +992,8 @@ State lives in ${STORAGE_ROOT}:
   shared/     opt-in, mounted into every agent at ~/shared
 
 Your real home directory is never mounted into a container. Full documentation: README.md,
-AGENTS.md (adding a tool), LOCAL-MODELS.md, REGISTRY.md.
+AGENTS.md (AI project instructions), ai/adding-an-agent.md, docs/LOCAL-MODELS.md,
+docs/REGISTRY.md.
 EOF
 }
 

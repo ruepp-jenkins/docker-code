@@ -1,138 +1,106 @@
-# Ein Tool hinzufügen
+# Project instructions
 
-Ein Ordner unter `agents/`. Mehr nicht — Wrapper, Installer, CI-Matrix und Tests lesen die Liste aus
-`agents/*/agent.env`, es gibt keine zweite Stelle, an der Agents aufgezählt werden.
+docker-code runs eight TUI coding agents (Claude Code, Codex, Gemini, Qwen, Mistral Vibe, OpenCode,
+Cursor, and Copilot) in per-agent containers. Each agent has a persistent home directory under
+`~/docker-code/`, and the containers share local-model services.
 
-```
-agents/meintool/
-├── agent.env      Pflicht — die Metadaten
-├── Dockerfile     Pflicht — ~20 Zeilen
-└── defaults/      optional — Configs, die beim ersten Start gesetzt werden
-```
+`AGENTS.md` is the canonical AI instruction file. Tool-specific instruction filenames at the
+repository root are symbolic links to this file; do not maintain separate copies.
 
-Danach:
+## Language
+
+Everything written into this repository must be in English, including documentation, code comments,
+identifiers, commit messages, PR descriptions, test names, errors, and log messages.
+
+Some existing files and comments are still in German and are being migrated. Do not translate them
+wholesale as a side effect of unrelated work. When modifying a section, write the changed or newly
+added text in English.
+
+## Commands
 
 ```bash
-ln -s docker-code bin/meintool-docker
-bats tests/registry.bats        # validiert den neuen Agent automatisch mit
-./scripts/build.sh meintool
-DOCKER_CODE_DRY_RUN=1 ./bin/meintool-docker
+bats tests/                          # Entire suite; no Docker daemon needed
+bats tests/models.bats               # One test file
+bats tests/models.bats -f "GPU"      # One test selected by name regex
+shellcheck --external-sources --source-path=. bin/docker-code lib/*.sh image/*.sh scripts/*.sh
+
+./scripts/test.sh                    # CI parity: test stage plus JUnit report
+./scripts/build.sh                   # Build the base image and every agent
+./scripts/build.sh base claude       # Build selected targets
+
+DOCKER_CODE_DRY_RUN=1 ./bin/qwen-docker  # Print the docker run argv
+DOCKER_CODE_SHELL=1 ./bin/qwen-docker    # Open a container shell instead of the agent
+./bin/docker-code doctor
+./bin/docker-code list
+./bin/docker-code models status
 ```
 
----
+The first group requires `bats` and `shellcheck`. `./scripts/test.sh` requires Docker and runs the
+same suite in the `test` stage of `base/Dockerfile`.
 
-## `agent.env`
+## Architecture
 
-Ein flaches `KEY=value`-Format. Es wird **gelesen, nicht gesourct** — eine unbekannte Schlüssel ist
-ein Fehler mit Zeilenangabe, kein stilles Ignorieren. Werte dürfen `"…"`, `'…'` oder nackt sein, und
-eine Zeile darf mit `\` in der nächsten fortgesetzt werden.
+Changes generally belong to one of two sides:
 
-### Pflicht
+- **Host side:** `bin/docker-code` and `lib/*.sh`. Before the final `exec`, this code constructs the
+  `docker run` arguments from the environment. `DOCKER_CODE_DRY_RUN=1` exposes that boundary, which
+  lets the test suite exercise the launcher with a stubbed `docker` and no daemon.
+- **Container side:** `image/*.sh`. This entrypoint chain reads `/etc/docker-code/agent.env` at
+  runtime and does not know individual tools by name. `entrypoint.sh` runs as root and prepares the
+  user, defaults, inner Docker daemon, firewall, and port bridge. `user-init.sh` starts rootless
+  Docker as `agent`. `launch.sh` assembles the agent arguments and executes the tool as `agent`.
 
-| Schlüssel | Bedeutung |
-|---|---|
-| `AGENT_ID` | muss dem Ordnernamen entsprechen |
-| `AGENT_BIN` | das Kommando im Container |
-| `AGENT_WRAPPER` | der Name auf dem Host — **muss** auf `-docker` enden und darf nicht `AGENT_BIN` sein |
+This boundary affects observability: `AGENT_LOCAL_ENV` is expanded on the host and appears in a dry
+run, while `AGENT_LOCAL_ARGS` is applied by `launch.sh` in the container and does not.
 
-### Optional
+### Agent registry
 
-| Schlüssel | Standard | Bedeutung |
-|---|---|---|
-| `AGENT_TITLE` | `AGENT_ID` | Klartextname für Meldungen |
-| `AGENT_HOSTNAME` | `AGENT_ID` | Hostname des Containers |
-| `AGENT_ALIASES` | — | weitere Wrapper-Namen, leerzeichengetrennt |
-| `AGENT_YOLO_ARGS` | — | Flags, die `DOCKER_CODE_YOLO=1` voranstellt |
-| `AGENT_YOLO_SKIP` | — | Subkommandos, die kein YOLO-Flag bekommen (`mcp`, `login`, …) |
-| `AGENT_PERMISSION_FLAGS` | `AGENT_YOLO_ARGS` | Flags, deren Anwesenheit die YOLO-Injektion unterdrückt |
-| `AGENT_ROOT_ENV` | — | Variablen, die als root gesetzt werden (z. B. `IS_SANDBOX=1`) |
-| `AGENT_ENV_VARS` | — | Variablen, die vom Host durchgereicht werden |
-| `AGENT_DOMAINS` | — | Hosts für `DOCKER_CODE_NET=restricted`; der erste ist die Kontrollprobe |
-| `AGENT_LOCAL_MODE` | `none` | siehe unten |
-| `AGENT_LOCAL_ENV` | — | `;`-getrennte `NAME=wert`-Liste; `%u` = Gateway-URL, `%m` = Modellname |
-| `AGENT_LOCAL_ARGS` | — | argv-Zusatz für lokale Modelle; `%m` = Modellname |
-| `AGENT_NOTE` | — | ein Satz, der einer Einschränkung erklärt — Pflicht bei `AGENT_LOCAL_MODE=none` |
+`agents/<id>/agent.env` is the only registry of supported agents. Wrappers, the installer, CI build
+matrix, and tests all discover agents from those files. `lib/agents.sh` reads the files as data rather
+than sourcing them, and rejects unknown keys with a line number.
 
-### `AGENT_LOCAL_MODE`
+For the complete workflow and `agent.env` schema, read [Adding an agent](ai/adding-an-agent.md) before
+adding an agent or changing the registry contract.
 
-Welches Wire-Format das Tool spricht, und damit, wohin es zeigt:
+### Configuration resolution
 
-| Modus | Ziel | Für Tools, die … |
-|---|---|---|
-| `none` | — | keine lokalen Modelle können (dann `AGENT_NOTE` setzen) |
-| `openai-compat` | Ollama, `:11434` | eine OpenAI-kompatible Base-URL akzeptieren |
-| `ollama-anthropic` | Ollama, `:11434` | das Anthropic-Messages-Format sprechen |
-| `litellm-gemini` | Gateway, `:4000` | nur Googles eigenes Format sprechen |
-| `litellm-openai` / `litellm-anthropic` | Gateway, `:4000` | eine Übersetzung brauchen, die Ollama nicht liefert |
+Every session setting must use `agent_knob NAME [default]` in `bin/docker-code`:
 
-Beide URLs sind `localhost` — der Container bekommt Port-Weiterleitungen dorthin, weil mehrere dieser
-Tools `localhost` fest verdrahten. Details: [LOCAL-MODELS.md](LOCAL-MODELS.md).
-
----
-
-## `Dockerfile`
-
-Build-Kontext ist immer das Repo-Root, nicht der Agent-Ordner.
-
-```dockerfile
-# syntax=docker/dockerfile:1
-ARG BASE_IMAGE=ruepp/docker-code-base:latest
-FROM ${BASE_IMAGE}
-
-ARG MEINTOOL_VERSION=latest
-RUN set -eux; \
-    npm install -g "meintool@${MEINTOOL_VERSION}"; \
-    npm cache clean --force
-
-COPY agents/meintool/agent.env /etc/docker-code/agent.env
-COPY agents/meintool/defaults/ /opt/docker-code/defaults/
-
-RUN set -eux; \
-    env HOME=/root meintool --version; \
-    rm -rf /root/.meintool
+```text
+DOCKER_CODE_<AGENT>_<NAME> > DOCKER_CODE_<NAME> > default
 ```
 
-Drei Dinge, die `tests/registry.bats` und `tests/image.bats` erzwingen, jedes aus einem konkreten
-Grund:
+Reading a setting directly from the environment silently breaks the per-agent override. The lint
+tests compare the README setting table with `agent_knob` usage.
 
-1. **`COPY agents/<id>/agent.env /etc/docker-code/agent.env`** — `launch.sh` und `init-firewall.sh`
-   lesen diese Datei zur Laufzeit. Ohne sie startet der Container und scheitert erst im letzten
-   Moment.
-2. **`<bin> --version` als Smoke-Test** — läuft pro Zielarchitektur, damit ein arm64-Image, das seine
-   eigenen Binaries nicht ausführen kann, gar nicht erst gepusht wird.
-3. **`env HOME=/root …` plus Aufräumen** — das HOME des Images ist der Mountpoint des Bind-Mounts.
-   Eine root-eigene Datei, die dort beim Bauen entsteht, ist genau das, was den ersten echten Start
-   kaputt macht.
+### Shared services
 
-Und eines, das nicht erzwungen werden kann, aber genauso wichtig ist: **installiere nichts nach
-`/home/agent`**. Der Bind-Mount ersetzt das Verzeichnis beim ersten Start, das Tool wäre danach weg.
-Cursors Installer macht genau das per Default — deshalb bekommt er in `agents/cursor/Dockerfile` ein
-eigenes `HOME=/opt/cursor` und einen Symlink nach `/usr/local/bin`.
+`lib/models.sh` starts one Ollama service and one LiteLLM service with fixed names on
+`docker-code-net`, allowing sessions to reuse them. Failures degrade to a warning and a session
+without local models. `lib/mirror.sh` follows the same pattern for the Docker Hub pull-through
+cache. `image/local-models.sh` forwards container-local ports `11434` and `4000` because some agents
+hard-code localhost. See [Local models](docs/LOCAL-MODELS.md) and
+[Registry and image tags](docs/REGISTRY.md).
 
-Wer ein eigenes apt-Repository hinzufügt, pinnt den Schlüssel auf seinen Fingerprint — siehe
-`agents/claude/Dockerfile`. Ein Repository mit ungeprüftem Schlüssel ist ein Supply-Chain-Loch in
-einem Image, dessen ganze Aufgabe es ist, einen Agent mit weitreichenden Rechten laufen zu lassen.
+## Project constraints
 
----
+- Never install an agent into `/home/agent` in a Dockerfile. The first real start replaces that path
+  with a bind mount. Redirect installers elsewhere; see `agents/cursor/Dockerfile` and
+  `agents/mistral/Dockerfile`.
+- Documentation is tested. Behavioral changes often require a matching documentation change. Tests
+  validate, among other things, documented GPU values, API-key names, setting resolution, and AMD
+  configuration.
+- Comments should explain why a choice exists, especially the failure or constraint that motivated
+  it, rather than narrating the code.
+- An agent installed from a package registry needs a `URLTriggerEntry` in `Jenkinsfile`, because
+  self-updaters are disabled in the images. `tests/pipeline.bats` enforces this for npm packages.
+- If an agent Dockerfile adds an apt repository, pin and verify the signing-key fingerprint. See
+  `agents/claude/Dockerfile`.
 
-## `defaults/`
+## Task-specific instructions
 
-Spiegelt das Home-Verzeichnis. `defaults/.codex/config.toml` landet als `~/.codex/config.toml`.
+Keep detailed procedures out of the always-loaded context. Read the relevant file before performing
+one of these tasks:
 
-Kopiert wird **pro Datei und nie über etwas Bestehendes**: wer schon ein `~/.config/opencode/` hat,
-bekommt trotzdem eine neue Default-Datei daneben, aber seine eigenen bleiben unangetastet. Dadurch
-erreicht auch ein Default, der erst in einem späteren Image dazukommt, bestehende Installationen.
-
-Das Seeding passiert bei jedem Start, weil Docker einen Bind-Mount — anders als ein leeres Named
-Volume — nicht aus dem Image vorbefüllt.
-
----
-
-## Wenn CI mitspielen soll
-
-Installiert das Tool von npm, gehört ein `URLTriggerEntry` in den `Jenkinsfile` — sonst erreicht ein
-Release nie jemanden, weil die Auto-Updater der Tools abgeschaltet sind. `tests/pipeline.bats` prüft
-das und nennt das fehlende Paket beim Namen.
-
-Alles andere in der Pipeline — die Build-Matrix, die Manifest-Schritte — liest die Agent-Liste zur
-Laufzeit aus `agents/` und braucht keine Änderung.
+- [Adding an agent](ai/adding-an-agent.md) — create an `agents/<id>/` entry, define `agent.env`, build
+  its Dockerfile, add defaults, and wire package-release CI triggers.

@@ -237,7 +237,7 @@ start_privileged_dockerd() {
     fi
 
     # Mirrors for registries other than Hub have to be addressed by name, so their hosts need the
-    # same exemption. See REGISTRY.md.
+    # same exemption. See docs/REGISTRY.md.
     local host hosts
     hosts="${DOCKER_CODE_INSECURE_REGISTRIES:-}"
     for host in ${hosts//,/ }; do

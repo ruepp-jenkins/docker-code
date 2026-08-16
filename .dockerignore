@@ -8,6 +8,11 @@ digest-*.txt
 # The docs are excluded except the ones tests/lint.bats and tests/pipeline.bats read back.
 *.md
 !README.md
-!REGISTRY.md
 !AGENTS.md
-!LOCAL-MODELS.md
+!CLAUDE.md
+!GEMINI.md
+!QWEN.md
+!ai/
+!ai/*.md
+!docs/
+!docs/*.md

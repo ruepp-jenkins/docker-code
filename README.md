@@ -108,7 +108,7 @@ einen einzelnen Agent `DOCKER_CODE_<AGENT>_` (z. B. `DOCKER_CODE_CODEX_IMAGE`).
 | `MOUNT="/a:/a:ro /b:/b"` | | zusätzliche Bind-Mounts |
 | `ENV="GH_TOKEN,FOO"` | | zusätzliche Variablen durchreichen |
 | `GITCONFIG=1` / `SSH=1` | `0` | `~/.gitconfig` (ro) bzw. den SSH-Agent durchreichen |
-| `REGISTRY_MIRROR=1` | `0` | Pull-Through-Cache vor Docker Hub ([REGISTRY.md](REGISTRY.md)) |
+| `REGISTRY_MIRROR=1` | `0` | Pull-Through-Cache vor Docker Hub ([REGISTRY.md](docs/REGISTRY.md)) |
 | `DRY_RUN=1` | `0` | das `docker run` ausgeben statt es auszuführen |
 
 ```bash
@@ -134,7 +134,7 @@ export DOCKER_CODE_CODEX_NET=full             # außer für Codex
 
 Der vollständige Block für lokale Modelle — samt der Variablen, die hier gerade **nicht** hingehören,
 weil sie auch Sessions ohne lokale Modelle treffen würden — steht in
-[LOCAL-MODELS.md](LOCAL-MODELS.md#dauerhaft-der-bashrc-block).
+[LOCAL-MODELS.md](docs/LOCAL-MODELS.md#dauerhaft-der-bashrc-block).
 
 Prüfen, ohne etwas zu starten:
 
@@ -170,7 +170,7 @@ DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b qwen-docker
 
 Damit ist nichts von Hand einzustellen. Wer trotzdem selbst konfiguriert und nach einem **API-Key**
 gefragt wird: **`docker-code-local`**, für alle Endpunkte. `docker-code models status` zeigt ihn
-zusammen mit den URLs an. Alles Weitere in [LOCAL-MODELS.md](LOCAL-MODELS.md).
+zusammen mit den URLs an. Alles Weitere in [LOCAL-MODELS.md](docs/LOCAL-MODELS.md).
 
 Lokale Modelle können: Claude Code, Codex, Qwen, OpenCode und Gemini CLI. Cursor und Copilot rechnen
 serverseitig beim Anbieter und sagen das, wenn man es versucht.
@@ -178,15 +178,15 @@ serverseitig beim Anbieter und sagen das, wenn man es versucht.
 Auf der **GPU** statt auf der CPU: NVIDIA wird erkannt, AMD ist eine Zeile —
 `DOCKER_CODE_MODELS_GPU=rocm` reicht die Karte durch *und* nimmt das ROCm-Image. Beides, samt
 `HSA_OVERRIDE_GFX_VERSION` für Karten, die ROCm nicht von selbst kennt, steht unter
-[GPU](LOCAL-MODELS.md#gpu).
+[GPU](docs/LOCAL-MODELS.md#gpu).
 
 ---
 
 ## Weiteres
 
-- **[AGENTS.md](AGENTS.md)** — ein achtes Tool hinzufügen. Kurzfassung: ein Ordner unter `agents/`.
-- **[LOCAL-MODELS.md](LOCAL-MODELS.md)** — der gemeinsame Modellspeicher, Ollama und das Gateway.
-- **[REGISTRY.md](REGISTRY.md)** — Images, Tags und der Pull-Through-Cache.
+- **[AGENTS.md](AGENTS.md)** — project instructions for AI coding agents and links to task-specific guides.
+- **[LOCAL-MODELS.md](docs/LOCAL-MODELS.md)** — der gemeinsame Modellspeicher, Ollama und das Gateway.
+- **[REGISTRY.md](docs/REGISTRY.md)** — Images, Tags und der Pull-Through-Cache.
 
 ```bash
 docker-code list       # welche Agents es gibt

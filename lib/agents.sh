@@ -100,7 +100,7 @@ agent_parse_file() {
             [ "${k}" = "${key}" ] && known=1 && break
         done
         if [ "${known}" != "1" ]; then
-            echo "docker-code: ${file}: unknown key ${key} (see AGENTS.md for the contract)" >&2
+            echo "docker-code: ${file}: unknown key ${key} (see ai/adding-an-agent.md for the contract)" >&2
             return 1
         fi
 

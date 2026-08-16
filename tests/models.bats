@@ -303,18 +303,18 @@ esac'
 @test "the documented GPU values are the ones the code accepts" {
     block="$(sed -n '/DOCKER_CODE_MODELS_GPU:-auto/,/esac/p' "${REPO_ROOT}/lib/models.sh")"
     [ -n "${block}" ]
-    # Every value the GPU table in LOCAL-MODELS.md offers has to appear in that case statement, or
+    # Every value the GPU table in docs/LOCAL-MODELS.md offers has to appear in that case statement, or
     # the page promises a setting that silently does something else.
     for value in auto 1 0 rocm; do
         [[ "${block}" == *"${value}"* ]] || {
-            echo "LOCAL-MODELS.md documents DOCKER_CODE_MODELS_GPU=${value}, the code has no branch for it"
+            echo "docs/LOCAL-MODELS.md documents DOCKER_CODE_MODELS_GPU=${value}, the code has no branch for it"
             return 1
         }
     done
-    grep -q 'DOCKER_CODE_MODELS_GPU' "${REPO_ROOT}/LOCAL-MODELS.md"
+    grep -q 'DOCKER_CODE_MODELS_GPU' "${REPO_ROOT}/docs/LOCAL-MODELS.md"
     # And the page has to tell people how to check, not just how to set it.
-    grep -q 'ollama ps' "${REPO_ROOT}/LOCAL-MODELS.md"
-    grep -q 'inference compute' "${REPO_ROOT}/LOCAL-MODELS.md"
+    grep -q 'ollama ps' "${REPO_ROOT}/docs/LOCAL-MODELS.md"
+    grep -q 'inference compute' "${REPO_ROOT}/docs/LOCAL-MODELS.md"
 }
 
 @test "the AMD knobs the page documents are knobs the code reads" {
@@ -322,15 +322,15 @@ esac'
     # variable behind it that did anything. Each of these has to exist on both sides.
     for var in DOCKER_CODE_OLLAMA_IMAGE DOCKER_CODE_OLLAMA_ENV DOCKER_CODE_OLLAMA_ARGS; do
         grep -q "${var}" "${REPO_ROOT}/lib/models.sh" || {
-            echo "LOCAL-MODELS.md documents ${var}, lib/models.sh never reads it"; return 1
+            echo "docs/LOCAL-MODELS.md documents ${var}, lib/models.sh never reads it"; return 1
         }
-        grep -q "${var}" "${REPO_ROOT}/LOCAL-MODELS.md" || {
-            echo "lib/models.sh reads ${var}, LOCAL-MODELS.md never mentions it"; return 1
+        grep -q "${var}" "${REPO_ROOT}/docs/LOCAL-MODELS.md" || {
+            echo "lib/models.sh reads ${var}, docs/LOCAL-MODELS.md never mentions it"; return 1
         }
     done
     # The two device nodes are the whole AMD story; a page that names neither cannot be followed.
-    grep -q '/dev/kfd' "${REPO_ROOT}/LOCAL-MODELS.md"
-    grep -q 'HSA_OVERRIDE_GFX_VERSION' "${REPO_ROOT}/LOCAL-MODELS.md"
+    grep -q '/dev/kfd' "${REPO_ROOT}/docs/LOCAL-MODELS.md"
+    grep -q 'HSA_OVERRIDE_GFX_VERSION' "${REPO_ROOT}/docs/LOCAL-MODELS.md"
 }
 
 @test "status prints the endpoints and the API key" {
@@ -348,8 +348,8 @@ esac'
 @test "the documented key is the one the code actually uses" {
     key="$(sed -n 's/^LOCAL_API_KEY="\(.*\)"$/\1/p' "${REPO_ROOT}/lib/models.sh")"
     [ -n "${key}" ]
-    grep -q "${key}" "${REPO_ROOT}/LOCAL-MODELS.md" || {
-        echo "LOCAL-MODELS.md does not name the API key '${key}'"; return 1
+    grep -q "${key}" "${REPO_ROOT}/docs/LOCAL-MODELS.md" || {
+        echo "docs/LOCAL-MODELS.md does not name the API key '${key}'"; return 1
     }
     # And every agent that reaches a local model is handed it, rather than being left to guess.
     for id in $(all_agent_ids); do
@@ -364,9 +364,9 @@ esac'
 
 @test "the documented example model is the same one throughout" {
     # A page that names three different models in three examples is a page people copy wrongly.
-    models="$(grep -oE 'qwen2\.5-coder:[0-9.]+b' "${REPO_ROOT}/LOCAL-MODELS.md" | sort -u)"
+    models="$(grep -oE 'qwen2\.5-coder:[0-9.]+b' "${REPO_ROOT}/docs/LOCAL-MODELS.md" | sort -u)"
     [ "$(printf '%s\n' "${models}" | wc -l)" -le 2 ] || {
-        echo "LOCAL-MODELS.md mixes example models:"; echo "${models}"; return 1
+        echo "docs/LOCAL-MODELS.md mixes example models:"; echo "${models}"; return 1
     }
 }
 
