@@ -58,8 +58,8 @@ pipeline {
     agent none
 
     environment {
-        // The stem; scripts/docker_tags.sh appends -base or -<agent>, so eight tools live in eight
-        // repositories rather than in one tag list nobody can read.
+        // The stem; scripts/docker_tags.sh appends -base or -<agent>, so every tool lives in its own
+        // repository rather than in one tag list nobody can read.
         IMAGE_FULLNAME = 'ruepp/docker-code'
         DOCKER_API_PASSWORD = credentials('DOCKER_API_PASSWORD')
 
@@ -75,7 +75,7 @@ pipeline {
     }
 
     triggers {
-        // Reasons to rebuild without a commit: one of the eight tools released a new version, or the
+        // Reasons to rebuild without a commit: one of the tools released a new version, or the
         // base image did. Both matter because the image is the update path for its users — every
         // tool is installed system-wide with its auto-updater off, and the base image carries the OS
         // security updates. Neither touches the persistent home directories, so an update costs
@@ -121,6 +121,13 @@ pipeline {
                 URLTriggerEntry(
                     url: 'https://pypi.org/pypi/mistral-vibe/json',
                     contentTypes: [JsonContent([JsonContentEntry(jsonPath: '$.info.version')])]
+                ),
+                // Kiro CLI comes from AWS's own download channel rather than a package registry.
+                // The channel manifest is what agents/kiro/Dockerfile installs from and verifies
+                // against, so watching it tracks exactly what a rebuild would pick up.
+                URLTriggerEntry(
+                    url: 'https://prod.download.cli.kiro.dev/stable/latest/manifest.json',
+                    contentTypes: [JsonContent([JsonContentEntry(jsonPath: '$.version')])]
                 ),
                 // The only image the build pulls: `ubuntu:24.04` backs both the runtime stage and
                 // the test stage. The tag has to track base/Dockerfile's UBUNTU_TAG. The digest is
@@ -170,7 +177,7 @@ pipeline {
         stage('Base') {
             // The shared layer, and the only place the test suite runs. Its `verified` stage refuses
             // to produce an image when a test failed, and every agent image copies the resulting
-            // stamp — so one red test blocks all eight rather than only the one that was touched.
+            // stamp — so one red test blocks every agent rather than only the one that was touched.
             parallel {
                 stage('base amd64') {
                     agent { label 'docker' }
@@ -232,7 +239,7 @@ pipeline {
             // per agent.
             //
             // Everything below the Jenkins workspace is shared per machine: one Docker daemon, one
-            // buildx builder named `mybuilder`, one build cache. Seven branches landing on the same
+            // buildx builder named `mybuilder`, one build cache. One branch per agent landing on the same
             // node would each create and then remove that builder underneath the others, and
             // docker_cleanup.sh would prune a cache the neighbours are still reading. Two branches,
             // each looping over the agents, keep the whole tool matrix on two machines with nothing

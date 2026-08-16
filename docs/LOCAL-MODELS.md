@@ -1,6 +1,6 @@
 # Local models
 
-One model store serves all agents. Eight separate copies of a 9 GB model would consume 72 GB; here the model is stored once under `~/docker-code/models/`, and every container uses the same daemon.
+One model store serves all agents. Nine separate copies of a 9 GB model would consume 81 GB; here the model is stored once under `~/docker-code/models/`, and every container uses the same daemon.
 
 All examples on this page use **`qwen3:14b`** (~9 GB, suitable for a 16 GB GPU) and are intended to work as written: copy, paste, run.
 
@@ -60,7 +60,7 @@ Two different tasks, and the difference determines whether a session works:
 - **Write code when asked** — any capable coding model can do this; `qwen3:14b` is good at it.
 - **Work as an agent** — read files, execute commands, and evaluate results. This requires a model
   with **tool-call support**: the agent sends tools in the `tools` field and expects `tool_calls` in
-  the response. All eight tools in this project use this mechanism.
+  the response. Every tool in this project uses this mechanism.
 
 A model without this training writes the function call as text in the response, the agent cannot execute it and displays raw JSON. **`qwen2.5-coder` belongs in this group** — it is a completion model, not an agent model, regardless of size.
 
@@ -612,9 +612,9 @@ OpenCode only offers models that a provider block explicitly declares. For the d
 
 The model can then be selected as `dockercode/qwen3:14b`.
 
-### Cursor CLI and GitHub Copilot CLI
+### Cursor CLI, GitHub Copilot CLI, and Kiro CLI
 
-Both calculate on the server side of the provider; there is no end point to turn around. `DOCKER_CODE_LOCAL=1` says this and starts the session anyway instead of doing nothing in silence.
+All three run their models on the provider's side; there is no endpoint to redirect. Kiro's settings do expose endpoint overrides, but they expect AWS service protocols rather than an OpenAI-compatible URL, so Ollama has nothing to answer with. `DOCKER_CODE_LOCAL=1` says this and starts the session anyway instead of doing nothing in silence.
 
 ---
 

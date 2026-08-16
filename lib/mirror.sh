@@ -155,7 +155,7 @@ mirror_start() {
     [ "$(docker inspect -f '{{.State.Running}}' "${MIRROR_CONTAINER}" 2>/dev/null || true)" = "true" ]
 }
 
-# The last session out turns off the light. Sessions are counted by label — across all eight agents,
+# The last session out turns off the light. Sessions are counted by label — across every agent,
 # not per agent — so a claude session still running keeps the mirror alive for the codex session that
 # is about to start. An unnamed container from a lost name race counts too.
 # shellcheck disable=SC2317  # reached through the trap installed before the run, not by a call

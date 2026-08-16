@@ -87,6 +87,21 @@ FIREWALL="${BATS_TEST_DIRNAME}/../image/init-firewall.sh"
     grep -q 'cannot work' "${FIREWALL}"
 }
 
+@test "a domain list continued across lines is read whole" {
+    # Most agents write AGENT_DOMAINS across several lines. A parser that stopped at the backslash
+    # would build the allowlist from part of a vendor's hosts and leave the rest to fail one by one,
+    # somewhere in the middle of a session that looks like it started fine.
+    env_file="${BATS_TEST_TMPDIR}/agent.env"
+    cat >"${env_file}" <<'EOF'
+AGENT_ID=fake
+AGENT_DOMAINS="first.example second.example \
+third.example"
+EOF
+    eval "$(sed -n '/^agent_get()/,/^}/p' "${FIREWALL}")"
+    AGENT_ENV_FILE="${env_file}"
+    [ "$(agent_get AGENT_DOMAINS)" = "first.example second.example third.example" ]
+}
+
 @test "an unresolvable domain degrades that one service, not the whole firewall" {
     grep -q 'WARNING: could not resolve' "${FIREWALL}"
 }

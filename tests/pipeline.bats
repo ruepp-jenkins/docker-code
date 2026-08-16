@@ -166,7 +166,7 @@ JENKINSFILE="${BATS_TEST_DIRNAME}/../Jenkinsfile"
 }
 
 @test "an agent image on a branch builds FROM that branch's own base" {
-    # A change to the base is then tested by all eight agents before either reaches master.
+    # A change to the base is then tested by every agent before either reaches master.
     run bash -c "export IMAGE_FULLNAME=ruepp/docker-code AGENT_ID=base BRANCH_NAME=master DATESTAMP=20260101; \
         . '${REPO_ROOT}/scripts/docker_tags.sh'; echo \"\${DOCKERFILE}|\${BASE_IMAGE_REF}\""
     [ "${output}" = "base/Dockerfile|" ]

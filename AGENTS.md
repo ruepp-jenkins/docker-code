@@ -1,7 +1,7 @@
 # Project instructions
 
-docker-code runs eight TUI coding agents (Claude Code, Codex, Gemini, Qwen, Mistral Vibe, OpenCode,
-Cursor, and Copilot) in per-agent containers. Each agent has a persistent home directory under
+docker-code runs nine TUI coding agents (Claude Code, Codex, Gemini, Qwen, Mistral Vibe, OpenCode,
+Cursor, Copilot, and Kiro) in per-agent containers. Each agent has a persistent home directory under
 `~/docker-code/`, and the containers share local-model services.
 
 `AGENTS.md` is the canonical AI instruction file. Tool-specific instruction filenames at the

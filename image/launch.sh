@@ -39,8 +39,16 @@ fi
 
 # Read, not source: the same restricted key=value format lib/agents.sh parses on the host, so a
 # malformed line is an error rather than something that executes.
+#
+# The awk pass joins a value continued with a trailing backslash, because the long lists are written
+# across several lines and reading only the first one is not a smaller list, it is a wrong one: a
+# skip list cut in half hands the tool a subcommand dressed up as a prompt.
 agent_get() {
-    sed -n "s/^$1=//p" "${AGENT_ENV_FILE}" | head -n 1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+    awk -v key="$1" '
+        pending != "" { sub(/^[[:space:]]+/, ""); $0 = pending " " $0; pending = "" }
+        /\\[[:space:]]*$/ { sub(/[[:space:]]*\\[[:space:]]*$/, ""); pending = $0; next }
+        index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }
+    ' "${AGENT_ENV_FILE}" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 
 AGENT_ID="$(agent_get AGENT_ID)"
