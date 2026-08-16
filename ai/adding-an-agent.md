@@ -105,6 +105,9 @@ When adding an apt repository, pin its signing key to the expected fingerprint. 
 `agents/claude/Dockerfile`. An unverified repository key is a supply-chain vulnerability in an image
 designed to run a highly privileged coding agent.
 
+A tool that ships as a downloaded archive rather than a package needs the same treatment: verify its
+checksum against the vendor's own manifest before unpacking it. See `agents/kiro/Dockerfile`.
+
 ## Defaults
 
 The `defaults/` tree mirrors the user's home directory. For example,
@@ -120,6 +123,10 @@ named volume.
 If the Dockerfile installs the tool from npm, add a `URLTriggerEntry` to `Jenkinsfile`; otherwise a
 new package release will not trigger an image build because agent self-updaters are disabled.
 `tests/pipeline.bats` reports a missing npm trigger by package name.
+
+A tool from somewhere other than a package registry needs the entry just as much, pointed at
+whatever endpoint states its current version — the release manifest for Kiro CLI, for example. Only
+the npm case is enforced by a test, because only that one has a URL shape worth guessing.
 
 The rest of the pipeline, including its build matrix and manifest steps, discovers agents from the
 `agents/` directory and requires no manual enumeration.

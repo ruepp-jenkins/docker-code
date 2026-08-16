@@ -5,7 +5,7 @@
 #
 #     claude-docker            gemini-docker            codex-docker
 #     qwen-docker              opencode-docker          copilot-docker
-#     cursor-agent-docker
+#     cursor-agent-docker      mistral-docker           kiro-docker
 #
 # Arguments are passed through untouched; this script only decides how the container around them is
 # built. Invoked as `docker-code` it is the management CLI instead — see `docker-code help`.

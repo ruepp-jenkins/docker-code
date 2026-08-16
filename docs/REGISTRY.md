@@ -2,14 +2,14 @@
 
 ## The names
 
-One repository per image, not one repository with agent-prefixed tags — no one reads a tag list with eight tools nested inside each other.
+One repository per image, not one repository with agent-prefixed tags — no one reads a tag list with every tool nested inside it.
 
 ```
 ruepp/docker-code-base        shared base layer
 ruepp/docker-code-claude      base + Claude Code
 ruepp/docker-code-codex       base + Codex CLI
 ruepp/docker-code-gemini      …
-ruepp/docker-code-qwen  -opencode  -cursor  -copilot
+ruepp/docker-code-qwen  -opencode  -cursor  -copilot  -kiro
 ```
 
 | branch | Repositories | Tags |
@@ -36,12 +36,12 @@ The price: the digest has to go from the build machine to the manifest machine �
 ## Build order
 
 ```
-Prepare  →  Base (amd64 ‖ arm64)  →  Base manifest  →  Agents (8 × 2)  →  Agent manifests
+Prepare  →  Base (amd64 ‖ arm64)  →  Base manifest  →  Agents (9 × 2)  →  Agent manifests
 ```
 
-The base manifest must exist before an agent build starts: agent Dockerfiles resolve their base image through a tag, and the manifest step is what writes it. On a branch, they use the base image from **that branch**, so all eight agents test a base-image change before it reaches `master`.
+The base manifest must exist before an agent build starts: agent Dockerfiles resolve their base image through a tag, and the manifest step is what writes it. On a branch, they use the base image from **that branch**, so every agent tests a base-image change before it reaches `master`.
 
-The test suite runs exactly once, in the `test` stage of `base/Dockerfile`. `verified` denies the image if it was red, and each agent image copies that stamp — so a red test blocks all eight.
+The test suite runs exactly once, in the `test` stage of `base/Dockerfile`. `verified` denies the image if it was red, and each agent image copies that stamp — so a red test blocks all of them.
 
 ---
 
@@ -75,7 +75,7 @@ docker-code registry start|stop|status
   `DOCKER_CODE_NET=restricted` because the container firewall allows attached Docker networks.
 - Container labels record the upstream and storage location and are checked at every start. A
   mismatch recreates the container without deleting cached blobs, which are addressed by digest.
-- Sessions are counted by label **across all eight agents**. A running Claude session therefore
+- Sessions are counted by label **across every agent**. A running Claude session therefore
   keeps the mirror alive while a Codex session starts.
 - Every failure becomes a warning and the session continues without the mirror. A cache must never
   prevent an agent session from starting.

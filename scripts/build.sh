@@ -34,7 +34,7 @@ die() { echo "build.sh: ERROR: $*" >&2; exit 1; }
 build_base() {
     log "base  ->  ${BASE_IMAGE}"
     # The suite runs in here (base/Dockerfile's test stage), and the `verified` stage refuses to
-    # produce an image when it failed. That is the gate for all eight agents, not just this one.
+    # produce an image when it failed. That is the gate for every agent, not just this one.
     docker buildx build \
         --builder "${BUILDER}" \
         --file base/Dockerfile \

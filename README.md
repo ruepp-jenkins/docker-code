@@ -1,6 +1,6 @@
 # docker-code
 
-Eight TUI coding agents, each in its own container, each with its own persistent directory — and a common local model store that they all share.
+Nine TUI coding agents, each in its own container, each with its own persistent directory — and a common local model store that they all share.
 
 | Call | Tool | Local Models |
 |---|---|---|
@@ -12,6 +12,7 @@ Eight TUI coding agents, each in its own container, each with its own persistent
 | `opencode-docker` | [OpenCode](https://opencode.ai) | yes, through Ollama |
 | `cursor-agent-docker` | [Cursor CLI](https://cursor.com/docs/cli/overview) | no (cloud only) |
 | `copilot-docker` | [GitHub Copilot CLI](https://github.com/github/copilot-cli) | no (cloud only) |
+| `kiro-docker` | [Kiro CLI](https://kiro.dev/docs/cli/) | no (cloud only) |
 
 The suffix `-docker` is intentional: `claude` remains `claude`, `gemini` remains `gemini`. Nothing you installed today will be hidden.
 
@@ -40,7 +41,7 @@ A single directory, `~/docker-code`:
 ~/docker-code/
 ├── claude/      ← the complete HOME of the Claude container
 ├── codex/       ← the complete HOME of the Codex container
-├── gemini/  qwen/  mistral/  opencode/  cursor/  copilot/
+├── gemini/  qwen/  mistral/  opencode/  cursor/  copilot/  kiro/
 ├── shared/      optional, mounted as ~/shared in every agent
 ├── models/      model weights shared by all agents
 │   ├── ollama/  gguf/  hf/  litellm/
@@ -146,7 +147,7 @@ DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b qwen-docker
 
 This means you don't have to adjust anything manually. If you still configure yourself and are asked for an **API key**: **`docker-code-local`**, for all endpoints. `docker-code models status` displays it along with the URLs. Everything else in [LOCAL-MODELS.md](docs/LOCAL-MODELS.md).
 
-Claude Code, Codex, Qwen, Mistral Vibe, OpenCode, and Gemini CLI support local models. Cursor and Copilot use provider-hosted models and report that limitation when requested.
+Claude Code, Codex, Qwen, Mistral Vibe, OpenCode, and Gemini CLI support local models. Cursor, Copilot, and Kiro use provider-hosted models and report that limitation when requested.
 
 On the **GPU** instead of the CPU: NVIDIA is recognized, AMD is one line — `DOCKER_CODE_MODELS_GPU=rocm` passes the card through *and* takes the ROCm image. Both, including `HSA_OVERRIDE_GFX_VERSION` for cards that ROCm does not recognize by itself, are available under [GPU](docs/LOCAL-MODELS.md#gpu).
 
@@ -205,6 +206,6 @@ bats tests/            # Entire suite, without a Docker daemon
 ./scripts/build.sh     # Build the base and all agents locally
 ```
 
-The suite runs in the `test` stage of `base/Dockerfile`, and `verified` refuses the image when it is red. Every agent image copies this stamp - so a red test blocks all eight, not just the one whose Dockerfile was currently touched.
+The suite runs in the `test` stage of `base/Dockerfile`, and `verified` refuses the image when it is red. Every agent image copies this stamp - so a red test blocks every agent, not just the one whose Dockerfile was currently touched.
 
 This is possible thanks to the dry run seam: everything `bin/docker-code` does before the start is pure command construction, i.e. a function from the environment to an argv — testable without a daemon.

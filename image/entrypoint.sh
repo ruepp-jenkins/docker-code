@@ -173,8 +173,8 @@ seed_home() {
 #
 # /opt/docker-code/defaults mirrors the home directory, so an agent seeds wherever its tool actually
 # looks — .codex/config.toml, .config/opencode/opencode.json, .claude/settings.json — without this
-# script knowing anything about any of them. That is what keeps "add a folder" true for tool number
-# eight.
+# script knowing anything about any of them. That is what keeps "add a folder" true for the next
+# tool.
 #
 # Copy semantics are per file, not per directory: a user who already has .config/opencode/ must
 # still receive a new default that lands beside their own files.

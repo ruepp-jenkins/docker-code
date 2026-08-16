@@ -88,6 +88,29 @@ args_line() {
     done
 }
 
+@test "a skip list continued across lines is read whole" {
+    # The long lists in agent.env are written across several lines. Reading only the first of them
+    # does not produce a shorter skip list, it produces a wrong one: the subcommands below the
+    # backslash would be prepended with the bypass arguments and, for a tool whose bypass names its
+    # chat subcommand, arrive at the model as a prompt.
+    cat >"${AGENT_ENV}" <<'EOF'
+AGENT_ID=fake
+AGENT_BIN=fake-cli
+AGENT_WRAPPER=fake-docker
+AGENT_YOLO_ARGS="chat --trust-everything"
+AGENT_YOLO_SKIP="chat login \
+mcp settings"
+EOF
+    make_stub fake-cli 'echo "ARGS: $*"'
+    export DOCKER_CODE_YOLO=1
+
+    run bash "${LAUNCH}" mcp list
+    [ "$(args_line)" = "mcp list" ]
+
+    run bash "${LAUNCH}" "fix the test"
+    [ "$(args_line)" = "chat --trust-everything fix the test" ]
+}
+
 @test "a permission flag the user typed is not overridden" {
     use_agent claude
     export DOCKER_CODE_YOLO=1
