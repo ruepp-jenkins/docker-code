@@ -178,11 +178,19 @@ done
 # checkout while offline.
 cp "${SOURCE}/install.sh" "${PREFIX}/install.sh"
 chmod 0755 "${PREFIX}/install.sh"
-for doc in README.md AGENTS.md LOCAL-MODELS.md REGISTRY.md; do
+for doc in README.md AGENTS.md; do
     if [ -f "${SOURCE}/${doc}" ]; then
         cp "${SOURCE}/${doc}" "${PREFIX}/"
     fi
 done
+if [ -d "${SOURCE}/docs" ]; then
+    mkdir -p "${PREFIX}/docs"
+    cp -R "${SOURCE}/docs/." "${PREFIX}/docs/"
+fi
+if [ -d "${SOURCE}/ai" ]; then
+    mkdir -p "${PREFIX}/ai"
+    cp -R "${SOURCE}/ai/." "${PREFIX}/ai/"
+fi
 
 chmod 0755 "${PREFIX}/bin/docker-code"
 chmod 0755 "${PREFIX}"/image/*.sh 2>/dev/null || true

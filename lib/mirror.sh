@@ -7,7 +7,7 @@
 # every session.
 #
 # Off by default: it is another container running on your machine, and that should be a decision
-# rather than a surprise. See REGISTRY.md.
+# rather than a surprise. See docs/REGISTRY.md.
 #
 # Deliberately a container on a network of its own rather than a published port: nothing new listens
 # on the host, and the firewall in `restricted` mode already lets a container reach the networks it

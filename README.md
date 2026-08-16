@@ -1,25 +1,19 @@
 # docker-code
 
-Acht TUI-Coding-Agents, jeder in seinem eigenen Container, jeder mit seinem eigenen persistenten
-Verzeichnis — und ein gemeinsamer Speicher für lokale Modelle, den sie sich alle teilen.
+Eight TUI coding agents, each in its own container, each with its own persistent directory — and a common local model store that they all share.
 
-| Aufruf | Tool | Lokale Modelle |
+| Call | Tool | Local Models |
 |---|---|---|
-| `claude-docker` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | ja, über Ollama |
-| `codex-docker` | [OpenAI Codex CLI](https://github.com/openai/codex) | ja, über Ollama |
-| `gemini-docker` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ja, über das LiteLLM-Gateway |
-| `qwen-docker` | [Qwen Code](https://github.com/QwenLM/qwen-code) | ja, über Ollama |
-| `mistral-docker` | [Mistral Vibe](https://github.com/mistralai/mistral-vibe) | ja, über Ollama |
-| `opencode-docker` | [OpenCode](https://opencode.ai) | ja, über Ollama |
-| `cursor-agent-docker` | [Cursor CLI](https://cursor.com/docs/cli/overview) | nein (Cloud-only) |
-| `copilot-docker` | [GitHub Copilot CLI](https://github.com/github/copilot-cli) | nein (Cloud-only) |
+| `claude-docker` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | yes, through Ollama |
+| `codex-docker` | [OpenAI Codex CLI](https://github.com/openai/codex) | yes, through Ollama |
+| `gemini-docker` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | yes, via the LiteLLM gateway |
+| `qwen-docker` | [Qwen Code](https://github.com/QwenLM/qwen-code) | yes, through Ollama |
+| `mistral-docker` | [Mistral Vibe](https://github.com/mistralai/mistral-vibe) | yes, through Ollama |
+| `opencode-docker` | [OpenCode](https://opencode.ai) | yes, through Ollama |
+| `cursor-agent-docker` | [Cursor CLI](https://cursor.com/docs/cli/overview) | no (cloud only) |
+| `copilot-docker` | [GitHub Copilot CLI](https://github.com/github/copilot-cli) | no (cloud only) |
 
-Mistrals Terminal-Agent heißt **Vibe**, nicht „Mistral Code" — Letzteres ist das IDE-Plugin für
-VS Code und JetBrains und läuft nicht im Terminal. Der Wrapper heißt `mistral-docker`, damit er bei
-den anderen Anbietern steht; `vibe-docker` tut dasselbe.
-
-Der Suffix `-docker` ist Absicht: `claude` bleibt `claude`, `gemini` bleibt `gemini`. Nichts, was du
-heute installiert hast, wird verdeckt.
+The suffix `-docker` is intentional: `claude` remains `claude`, `gemini` remains `gemini`. Nothing you installed today will be hidden.
 
 ---
 
@@ -27,116 +21,100 @@ heute installiert hast, wird verdeckt.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ruepp-jenkins/docker-code/master/install.sh | bash
-docker-code build          # einmalig: Basis-Image + alle Agents bauen
 ```
 
-Der Installer legt den Baum unter `~/.local/share/docker-code` ab und verlinkt `docker-code` plus
-einen Wrapper pro Agent nach `~/.local/bin`. Er benutzt **kein** sudo, schreibt in **keine**
-Shell-Startdatei und legt **keinen** Alias an.
+The installer places the tree under `~/.local/share/docker-code` and links `docker-code` plus one wrapper per agent to `~/.local/bin`. It uses **no** sudo, writes to **no** shell startup file, and creates **no** alias.
 
 ```bash
-cd ~/mein-projekt
-claude-docker              # los
+cd ~/my-project
+claude-docker              # Start
 ```
 
 ---
 
-## Wo alles liegt
+## Storage layout
 
-Ein einziges Verzeichnis, `~/docker-code`:
+A single directory, `~/docker-code`:
 
 ```
 ~/docker-code/
-├── claude/      ← das komplette HOME des claude-Containers
-├── codex/       ← das komplette HOME des codex-Containers
+├── claude/      ← the complete HOME of the Claude container
+├── codex/       ← the complete HOME of the Codex container
 ├── gemini/  qwen/  mistral/  opencode/  cursor/  copilot/
-├── shared/      optional, in jedem Agent unter ~/shared
-├── models/      die Gewichte, die sich alle teilen
+├── shared/      optional, mounted as ~/shared in every agent
+├── models/      model weights shared by all agents
 │   ├── ollama/  gguf/  hf/  litellm/
-└── registry/    Pull-Through-Cache für Docker Hub
+└── registry/    pull-through cache for Docker Hub
 ```
 
-`~/docker-code/gemini/` **ist** `/home/agent` im Gemini-Container. Alles, was das Tool anlegt —
-Login, Sessions, Settings, MCP-Server, Shell-History — landet dort und überlebt jeden Neustart. Auf
-dem Host ist es ein ganz normaler Ordner: `ls`, `du`, `tar`, `rm`.
+`~/docker-code/gemini/` **is** `/home/agent` in the Gemini container. Everything the tool creates - login, sessions, settings, MCP server, shell history - ends up there and survives every restart. On the host it is a normal folder: `ls`, `du`, `tar`, `rm`.
 
 ```bash
 tar czf backup.tar.gz -C ~ docker-code     # Backup
-rm -rf ~/docker-code/gemini                # nur Gemini zurücksetzen
+rm -rf ~/docker-code/gemini                # Reset Gemini only
 ```
 
-Ein anderer Ort: `export DOCKER_CODE_HOME=/pfad/dazu` (muss absolut sein).
+To use another location, set `export DOCKER_CODE_HOME=/absolute/path`.
 
 ---
 
-## Was ein Container sieht
+## What a container sees
 
-| erreichbar | nicht erreichbar |
+| reachable | not reachable |
 |---|---|
-| `~/docker-code/<agent>/` (rw) — sein HOME | dein echtes Home-Verzeichnis |
-| das Verzeichnis, aus dem du ihn gestartet hast (rw) | jeder andere Pfad auf dem Host |
-| `~/docker-code/models/` (ro, nur mit `DOCKER_CODE_LOCAL=1`) | `/var/run/docker.sock` — **nie** gemountet |
-| explizite Extras via `DOCKER_CODE_MOUNT` | `~/.gitconfig`, `$SSH_AUTH_SOCK` (opt-in, standardmäßig aus) |
+| `~/docker-code/<agent>/` (rw) — its HOME | your real home directory |
+| the directory from which you started it (rw) | any other path on the host |
+| `~/docker-code/models/` (ro, only with `DOCKER_CODE_LOCAL=1`) | `/var/run/docker.sock` — **never** mounted |
+| explicit extras via `DOCKER_CODE_MOUNT` | `~/.gitconfig`, `$SSH_AUTH_SOCK` (opt-in, off by default) |
 
-Der Start aus dem Home-Verzeichnis oder aus `/` wird **abgelehnt**, nicht nur bemängelt.
-`tests/isolation.bats` hält diese Liste als Negativ-Assertion fest, damit sie nicht unbemerkt wächst.
+Starting from the home directory or from `/` is **rejected**, not just criticized. `tests/isolation.bats` keeps this list as a negative assertion so that it doesn't grow unnoticed.
 
-**Ehrlich dazu:** Der innere Docker-Daemon läuft standardmäßig `privileged`, weil das der einzige
-Modus ist, der auf allen getesteten Hosts funktioniert — unter Linux wie unter macOS. Ein
-privilegierter Container ist damit **keine Sicherheitsgrenze zum Host**. Was oben steht, ist eine
-Dateisystem-Abschirmung: dein Home und deine Credentials sind außen vor. Es ist kein Ausbruchsschutz.
-Wer den will: `DOCKER_CODE_DIND=0` (kein innerer Daemon, kein `--privileged`) und
-`DOCKER_CODE_NET=restricted`.
+**Honestly:** The inner Docker daemon runs `privileged` by default because that's the only mode that works on all tested hosts - both on Linux and macOS. A privileged container is therefore **no security boundary to the host**. What is written above is a file system shield: your home and your credentials are excluded. It is not an outbreak protection. Whoever wants it: `DOCKER_CODE_DIND=0` (no inner daemon, no `--privileged`) and `DOCKER_CODE_NET=restricted`.
 
 ---
 
-## Knöpfe
+## Configuration
 
-Alles per Umgebungsvariable, damit es sich mit dem Wrapper komponiert. Präfix `DOCKER_CODE_`, für
-einen einzelnen Agent `DOCKER_CODE_<AGENT>_` (z. B. `DOCKER_CODE_CODEX_IMAGE`).
+Everything via environment variable so that it composes itself with the wrapper. Prefix `DOCKER_CODE_`, for a single agent `DOCKER_CODE_<AGENT>_` (e.g. `DOCKER_CODE_CODEX_IMAGE`).
 
-| Variable | Standard | Wirkung |
+| variable | Default | Effect |
 |---|---|---|
-| `YOLO=1` | `0` | ohne Berechtigungsabfragen — das jeweils richtige Flag pro Tool |
-| `NET=restricted` | `full` | Egress nur zu den Domains des Tools (iptables + ipset) |
-| `NET=none` | | gar kein Netz |
-| `DIND=0` \| `rootless` \| `privileged` | `privileged` | innerer Docker-Daemon |
-| `LOCAL=1` | `0` | die gemeinsamen lokalen Modelle benutzen |
-| `LOCAL_MODEL=<name>` | | welches (`docker-code models list`) |
-| `SHELL=1` | `0` | statt des Agents eine Bash im Container |
-| `SHARED=1` | `0` | `~/docker-code/shared` unter `~/shared` einhängen |
-| `MOUNT="/a:/a:ro /b:/b"` | | zusätzliche Bind-Mounts |
-| `ENV="GH_TOKEN,FOO"` | | zusätzliche Variablen durchreichen |
-| `GITCONFIG=1` / `SSH=1` | `0` | `~/.gitconfig` (ro) bzw. den SSH-Agent durchreichen |
-| `REGISTRY_MIRROR=1` | `0` | Pull-Through-Cache vor Docker Hub ([REGISTRY.md](REGISTRY.md)) |
-| `DRY_RUN=1` | `0` | das `docker run` ausgeben statt es auszuführen |
+| `YOLO=1` | `0` | without authorization queries — the right flag for each tool |
+| `NET=restricted` | `full` | Egress only to the tool's domains (iptables + ipset) |
+| `NET=none` | | no network at all |
+| `DIND=0` \| `rootless` \| `privileged` | `privileged` | inner docker daemon |
+| `LOCAL=1` | `0` | use the common local models |
+| `LOCAL_MODEL=<name>` | | which (`docker-code models list`) |
+| `SHELL=1` | `0` | instead of the agent a bash in the container |
+| `SHARED=1` | `0` | Mount `~/docker-code/shared` under `~/shared` |
+| `MOUNT="/a:/a:ro /b:/b"` | | additional bind mounts |
+| `ENV="GH_TOKEN,FOO"` | | pass through additional variables |
+| `GITCONFIG=1` / `SSH=1` | `0` | Pass through `~/.gitconfig` (ro) or the SSH agent |
+| `REGISTRY_MIRROR=1` | `0` | Pull-through cache before Docker Hub ([REGISTRY.md](docs/REGISTRY.md)) |
+| `DRY_RUN=1` | `0` | output the `docker run` instead of executing it |
 
 ```bash
 DOCKER_CODE_YOLO=1 DOCKER_CODE_NET=restricted claude-docker
-DOCKER_CODE_SHELL=1 opencode-docker           # nachsehen, was im Container los ist
-DOCKER_CODE_DRY_RUN=1 qwen-docker             # nur zeigen, was passieren würde
+DOCKER_CODE_SHELL=1 opencode-docker           # Inspect the container
+DOCKER_CODE_DRY_RUN=1 qwen-docker             # Show what would happen
 ```
 
-### Dauerhaft, in der `.bashrc`
+### Permanent, in the `.bashrc`
 
-`DOCKER_CODE_<AGENT>_<KNOPF>` schlägt `DOCKER_CODE_<KNOPF>` schlägt den Standard — und zwar für jeden
-Knopf aus der Tabelle. Damit lässt sich pro Agent entscheiden, was sonst nur pauschal ginge:
+`DOCKER_CODE_<AGENT>_<SETTING>` overrides `DOCKER_CODE_<SETTING>`, which overrides the default. This applies to every setting in the table:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 
-export DOCKER_CODE_QWEN_LOCAL=1               # Qwen rechnet lokal …
-export DOCKER_CODE_QWEN_LOCAL_MODEL=qwen2.5-coder:14b
-export DOCKER_CODE_CLAUDE_YOLO=1              # … Claude ohne Rückfragen, aber in der Cloud
-export DOCKER_CODE_NET=restricted             # für alle: Egress nur zu den Domains des Tools
-export DOCKER_CODE_CODEX_NET=full             # außer für Codex
+export DOCKER_CODE_QWEN_LOCAL=1               # Run Qwen locally
+export DOCKER_CODE_QWEN_LOCAL_MODEL=qwen3:14b
+export DOCKER_CODE_NET=restricted             # Restrict egress for every agent
+export DOCKER_CODE_CODEX_NET=full             # Except Codex
 ```
 
-Der vollständige Block für lokale Modelle — samt der Variablen, die hier gerade **nicht** hingehören,
-weil sie auch Sessions ohne lokale Modelle treffen würden — steht in
-[LOCAL-MODELS.md](LOCAL-MODELS.md#dauerhaft-der-bashrc-block).
+The complete block for local models - including the variables that **don't** belong here because they would also affect sessions without local models - is in [LOCAL-MODELS.md](docs/LOCAL-MODELS.md#permanent-the-bashrc-block).
 
-Prüfen, ohne etwas zu starten:
+Check without starting anything:
 
 ```bash
 DOCKER_CODE_DRY_RUN=1 qwen-docker
@@ -144,23 +122,21 @@ DOCKER_CODE_DRY_RUN=1 qwen-docker
 
 ---
 
-## Umgebungsvariablen, die durchgereicht werden
+## Environment variables passed through
 
-Eine explizite Liste, keine Pauschalkopie: ein Gemini-Container hat nichts mit dem
-`ANTHROPIC_API_KEY` zu tun, der in deiner Shell exportiert ist.
+An explicit list, not a blanket copy: a Gemini container has nothing to do with the `ANTHROPIC_API_KEY` exported in your shell.
 
-- **Pro Agent**: `AGENT_ENV_VARS` in `agents/<id>/agent.env` — z. B. `ANTHROPIC_API_KEY` für Claude,
-  `OPENAI_*` für Codex und Qwen, `GH_TOKEN` für Copilot.
-- **Für alle**: `TERM`, `COLORTERM`, `TZ`, `LANG`, die Proxy-Variablen, `NODE_EXTRA_CA_CERTS`,
+- **Per agent**: `AGENT_ENV_VARS` in `agents/<id>/agent.env` — for example, `ANTHROPIC_API_KEY` for Claude,
+  `OPENAI_*` for Codex and Qwen, `GH_TOKEN` for Copilot.
+- **For all**: `TERM`, `COLORTERM`, `TZ`, `LANG`, the proxy variables, `NODE_EXTRA_CA_CERTS`,
   `DO_NOT_TRACK`.
-- **Zusätzlich**: `DOCKER_CODE_ENV="MEIN_TOKEN,NOCH_EINS"`.
+- **Additionally**: `DOCKER_CODE_ENV="MY_TOKEN,ANOTHER_ONE"`.
 
-Nur gesetzte Variablen werden übergeben — eine ungesetzte bleibt drinnen ungesetzt, statt als leerer
-String einen Container-Default zu überschreiben.
+Only set variables are passed - an unset one remains unset inside, instead of overwriting a container default as an empty string.
 
 ---
 
-## Lokale Modelle in drei Zeilen
+## Local models in three lines
 
 ```bash
 docker-code models up
@@ -168,87 +144,67 @@ docker-code models pull qwen2.5-coder:14b
 DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen2.5-coder:14b qwen-docker
 ```
 
-Damit ist nichts von Hand einzustellen. Wer trotzdem selbst konfiguriert und nach einem **API-Key**
-gefragt wird: **`docker-code-local`**, für alle Endpunkte. `docker-code models status` zeigt ihn
-zusammen mit den URLs an. Alles Weitere in [LOCAL-MODELS.md](LOCAL-MODELS.md).
+This means you don't have to adjust anything manually. If you still configure yourself and are asked for an **API key**: **`docker-code-local`**, for all endpoints. `docker-code models status` displays it along with the URLs. Everything else in [LOCAL-MODELS.md](docs/LOCAL-MODELS.md).
 
-Lokale Modelle können: Claude Code, Codex, Qwen, OpenCode und Gemini CLI. Cursor und Copilot rechnen
-serverseitig beim Anbieter und sagen das, wenn man es versucht.
+Claude Code, Codex, Qwen, Mistral Vibe, OpenCode, and Gemini CLI support local models. Cursor and Copilot use provider-hosted models and report that limitation when requested.
 
-Auf der **GPU** statt auf der CPU: NVIDIA wird erkannt, AMD ist eine Zeile —
-`DOCKER_CODE_MODELS_GPU=rocm` reicht die Karte durch *und* nimmt das ROCm-Image. Beides, samt
-`HSA_OVERRIDE_GFX_VERSION` für Karten, die ROCm nicht von selbst kennt, steht unter
-[GPU](LOCAL-MODELS.md#gpu).
+On the **GPU** instead of the CPU: NVIDIA is recognized, AMD is one line — `DOCKER_CODE_MODELS_GPU=rocm` passes the card through *and* takes the ROCm image. Both, including `HSA_OVERRIDE_GFX_VERSION` for cards that ROCm does not recognize by itself, are available under [GPU](docs/LOCAL-MODELS.md#gpu).
 
 ---
 
-## Weiteres
+## Further documentation
 
-- **[AGENTS.md](AGENTS.md)** — ein achtes Tool hinzufügen. Kurzfassung: ein Ordner unter `agents/`.
-- **[LOCAL-MODELS.md](LOCAL-MODELS.md)** — der gemeinsame Modellspeicher, Ollama und das Gateway.
-- **[REGISTRY.md](REGISTRY.md)** — Images, Tags und der Pull-Through-Cache.
+- **[LOCAL-MODELS.md](docs/LOCAL-MODELS.md)** — the shared model store, Ollama and the gateway.
+- **[REGISTRY.md](docs/REGISTRY.md)** — Images, tags and the pull-through cache.
 
 ```bash
-docker-code list       # welche Agents es gibt
-docker-code doctor     # was installiert, gültig und gebaut ist
-docker-code help       # alle Kommandos
+docker-code list       # List available agents
+docker-code doctor     # Show what is installed, valid, and built
+docker-code help       # List all commands
 ```
 
 ---
 
 ## Updates
 
-Zwei getrennte Dinge, und deshalb zwei Befehle: die **Images** (ein Tool hat eine neue Version) und
-**docker-code selbst** (ein Agent kommt dazu, ein Wrapper ändert sich).
+Two separate things, and therefore two commands: the **images** (a tool has a new version) and **docker-code itself** (an agent is added, a wrapper changes).
 
 ```bash
-docker-code update            # die Images ziehen — alle
-docker-code update claude     # oder nur einen
-docker-code build claude      # oder selbst bauen statt ziehen
+docker-code update            # Pull every image
+docker-code update claude     # Pull one image
+docker-code build claude      # Build locally instead of pulling
 
-docker-code self-update       # docker-code, die Agent-Definitionen und die Wrapper
+docker-code self-update       # Update docker-code, agent definitions, and wrappers
 ```
 
-`self-update` weiß, woher deine Installation stammt: `install.sh` hinterlegt das beim Installieren in
-`.install-source`. Eine Installation aus dem Netz holt sich denselben Branch wieder, eine mit
-`--local` gebaute aktualisiert aus genau dem Checkout — kein stilles Umschalten auf GitHub. Einen
-anderen Stand ziehen:
+`self-update` knows where your installation comes from: `install.sh` stores this in `.install-source` when installing. An installation from the network gets the same branch again, one built with `--local` updates from exactly the checkout - no silent switching to GitHub. Move another stand:
 
 ```bash
 docker-code self-update --ref v2
 ```
 
-Neue Agents bringen einen neuen Wrapper mit; `self-update` legt den Symlink an und nennt die Zahl der
-verlinkten Befehle. Danach fehlt nur noch das Image: `docker-code update <agent>` oder
-`docker-code build <agent>`.
+New agents bring with them a new wrapper; `self-update` creates the symlink and states the number of linked commands. After that, all that's missing is the image: `docker-code update <agent>` or `docker-code build <agent>`.
 
-Arbeitest du direkt im Checkout — die Wrapper zeigen dann dorthin —, ist `git pull` das Update, und
-`self-update` sagt dir das, statt so zu tun als hätte es etwas getan.
+If you're working directly in checkout - the wrappers point there - `git pull` is the update, and `self-update` tells you that instead of pretending it did something.
 
-Die Tools selbst sind systemweit im Image installiert, mit abgeschaltetem Auto-Updater. Ein neues
-Image ist damit der einzige Weg, auf dem eine neue Tool-Version bei dir ankommt — und es fasst dein
-`~/docker-code` nicht an: kein neuer Login, keine verlorenen Sessions. Die CI baut neu, wenn eines
-der Tools eine neue Version veröffentlicht oder das Ubuntu-Basis-Image sich bewegt.
+The tools themselves are installed system-wide in the image, with the auto-updater switched off. A new image is the only way a new tool version will reach you - and it doesn't affect your `~/docker-code`: no new login, no lost sessions. The CI rebuilds when one of the tools releases a new version or the Ubuntu base image moves.
 
-Deinstallieren, ohne den Zustand zu verlieren:
+Uninstall without losing state:
 
 ```bash
-install.sh --uninstall        # entfernt Befehle und Installation, ~/docker-code bleibt
+install.sh --uninstall        # Remove commands and installation; keep ~/docker-code
 ```
 
 ---
 
-## Entwicklung
+## Development
 
 ```bash
-bats tests/            # die ganze Suite, ohne Docker-Daemon
-./scripts/test.sh      # dieselbe Suite wie in der CI, mit JUnit-Report
-./scripts/build.sh     # Basis + alle Agents lokal
+bats tests/            # Entire suite, without a Docker daemon
+./scripts/test.sh      # Same suite as CI, with a JUnit report
+./scripts/build.sh     # Build the base and all agents locally
 ```
 
-Die Suite läuft in der `test`-Stage von `base/Dockerfile`, und `verified` verweigert das Image, wenn
-sie rot ist. Jedes Agent-Image kopiert diesen Stempel — ein roter Test blockiert also alle acht,
-nicht nur den, dessen Dockerfile gerade angefasst wurde.
+The suite runs in the `test` stage of `base/Dockerfile`, and `verified` refuses the image when it is red. Every agent image copies this stamp - so a red test blocks all eight, not just the one whose Dockerfile was currently touched.
 
-Möglich ist das durch die Dry-Run-Naht: alles, was `bin/docker-code` vor dem Start tut, ist reine
-Kommandokonstruktion, also eine Funktion von der Umgebung auf ein argv — prüfbar ohne Daemon.
+This is possible thanks to the dry run seam: everything `bin/docker-code` does before the start is pure command construction, i.e. a function from the environment to an argv — testable without a daemon.

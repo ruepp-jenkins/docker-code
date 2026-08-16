@@ -69,7 +69,7 @@ EOF
     # directory, shared by every agent by definition.
     global_only=" DRY_RUN HOME "
 
-    knobs="$(sed -n '/^## Knöpfe/,/^---$/p' "${REPO_ROOT}/README.md" |
+    knobs="$(sed -n '/^## Configuration/,/^---$/p' "${REPO_ROOT}/README.md" |
         grep -oE '`[A-Z_]+=' | tr -d '`=' | sort -u)"
     [ -n "${knobs}" ]
 
@@ -88,8 +88,24 @@ EOF
 }
 
 @test "the files the docs point at exist" {
-    for doc in README.md AGENTS.md LOCAL-MODELS.md REGISTRY.md; do
+    for doc in README.md AGENTS.md ai/adding-an-agent.md docs/LOCAL-MODELS.md docs/REGISTRY.md; do
         [ -f "${REPO_ROOT}/${doc}" ] || { echo "${doc} is missing"; return 1; }
+    done
+}
+
+@test "tool-specific AI instruction files resolve to the canonical content" {
+    for doc in CLAUDE.md GEMINI.md QWEN.md; do
+        # Docker COPY dereferences source links in the test image. In a checkout, verify the link;
+        # in that image, verify the resulting file is still byte-for-byte canonical.
+        if [ -L "${REPO_ROOT}/${doc}" ]; then
+            [ "$(readlink "${REPO_ROOT}/${doc}")" = "AGENTS.md" ] || {
+                echo "${doc} does not link to AGENTS.md"; return 1
+            }
+        else
+            cmp -s "${REPO_ROOT}/${doc}" "${REPO_ROOT}/AGENTS.md" || {
+                echo "${doc} differs from AGENTS.md"; return 1
+            }
+        fi
     done
 }
 
