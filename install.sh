@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs docker-code and one wrapper per agent.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ruepp-jenkins/docker-code/master/install.sh | bash
+#   git clone https://github.com/ruepp-jenkins/docker-code.git && ./docker-code/install.sh --local
+#   ./install.sh                         clone the tree itself, then install it
 #   ./install.sh --local                 from a checkout you already have
 #   ./install.sh --uninstall
 #
@@ -135,18 +136,30 @@ if [ "${MODE}" = "local" ]; then
     fi
     [ -d "${SOURCE}" ] || die "no such directory: ${SOURCE}"
 else
-    command -v curl >/dev/null || die "curl is required to download"
-    command -v tar >/dev/null || die "tar is required to unpack"
+    command -v git >/dev/null ||
+        die "git is required to download. Install it, or use --local from a checkout you have"
 
     STAGE="$(mktemp -d "${TMPDIR:-/tmp}/docker-code.XXXXXX")"
-    url="https://codeload.github.com/${REPO}/tar.gz/${REF}"
+    clone="${STAGE}/${REPO##*/}"
+    remote="https://github.com/${REPO}.git"
 
     echo "downloading ${REPO}@${REF}"
-    curl -fsSL "${url}" | tar -xzf - -C "${STAGE}" ||
-        die "could not download ${url}"
 
-    SOURCE="$(find "${STAGE}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-    [ -n "${SOURCE}" ] || die "the downloaded archive was empty"
+    # --depth 1: it is the tree that gets installed, and nothing here reads history.
+    git clone --depth 1 --branch "${REF}" -q "${remote}" "${clone}" 2>/dev/null || {
+        # --branch takes a branch or a tag and refuses a commit sha, so a pinned DOCKER_CODE_REF
+        # falls through to a full clone and an explicit checkout.
+        rm -rf "${clone}"
+        git clone -q "${remote}" "${clone}" 2>/dev/null &&
+            git -C "${clone}" checkout -q "${REF}" 2>/dev/null
+    } || {
+        echo "install.sh: could not clone ${remote} at ${REF}." >&2
+        echo "  - check that the repository and the ref exist, and that github.com is reachable" >&2
+        echo "  - private fork? git needs credentials for it, or use --local from a checkout" >&2
+        die "could not download ${REPO}@${REF}"
+    }
+
+    SOURCE="${clone}"
 fi
 
 # Validate before installing anything. A truncated download or the wrong repository should fail here,

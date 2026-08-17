@@ -237,3 +237,37 @@ EOF
         return 1
     }
 }
+
+@test "fetching goes through git, not GitHub's throttled archive endpoints" {
+    # GitHub throttles codeload and raw.githubusercontent.com separately from the rest of the API and
+    # considerably harder. A self-update died on
+    #     curl: (56) The requested URL returned error: 429
+    # at a moment when api.github.com reported a full quota and cloning worked fine, so the archive
+    # path is not a shortcut worth keeping next to a clone.
+    block="$(sed -n '/^# Fetch$/,/^# Install$/p' "${REPO_ROOT}/install.sh")"
+    [ -n "${block}" ]
+    [[ "${block}" == *"git clone"* ]]
+
+    for endpoint in codeload raw.githubusercontent.com tar.gz; do
+        [[ "${block}" != *"${endpoint}"* ]] || {
+            echo "the fetch still reaches for ${endpoint}, which is the throttled path"
+            return 1
+        }
+    done
+}
+
+@test "a pinned commit sha still installs, though --branch refuses one" {
+    # git clone --branch takes a branch or a tag only, so DOCKER_CODE_REF=<sha> has to fall through
+    # to a full clone and an explicit checkout rather than failing the install.
+    block="$(sed -n '/^# Fetch$/,/^# Install$/p' "${REPO_ROOT}/install.sh")"
+    [[ "${block}" == *"checkout"* ]] || {
+        echo "there is no path for a ref that is not a branch or tag"
+        return 1
+    }
+}
+
+@test "a missing git says so, and names the way out that needs no network" {
+    block="$(sed -n '/^# Fetch$/,/^# Install$/p' "${REPO_ROOT}/install.sh")"
+    [[ "${block}" == *"git is required"* ]]
+    [[ "${block}" == *"--local"* ]]
+}

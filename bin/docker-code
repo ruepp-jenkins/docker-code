@@ -1156,7 +1156,7 @@ EOF
     fi
 
     [ -f "${installer}" ] ||
-        die "${installer} is missing; reinstall with the curl one-liner from README.md"
+        die "${installer} is missing; clone the repository and run its install.sh --local (README.md)"
 
     local mode source repo ref install_dir prefix
     mode="$(sed -n 's/^mode=//p' "${record}" | head -n 1)"

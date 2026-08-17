@@ -21,10 +21,13 @@ The suffix `-docker` is intentional: `claude` remains `claude`, `gemini` remains
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ruepp-jenkins/docker-code/master/install.sh | bash
+git clone https://github.com/ruepp-jenkins/docker-code.git
+./docker-code/install.sh --local
 ```
 
 The installer places the tree under `~/.local/share/docker-code` and links `docker-code` plus one wrapper per agent to `~/.local/bin`. It uses **no** sudo, writes to **no** shell startup file, and creates **no** alias.
+
+Fetching goes through git, for installs and for `docker-code self-update` alike. GitHub throttles its archive endpoints — `codeload` and `raw.githubusercontent.com` — separately from the rest of the API and considerably harder, so a download-based installer fails with `HTTP 429` at moments when cloning the same repository works fine. Every machine this runs on has git anyway.
 
 ```bash
 cd ~/my-project
