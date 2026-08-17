@@ -57,6 +57,12 @@ start_rootless_dockerd() {
     (
         exec >>"${DOCKERD_LOG}" 2>&1
         echo "=== dockerd-rootless started $(date -Is) ==="
+        # As in the privileged path: a registry pull takes its proxy from the environment, not a flag.
+        if [ -n "${DOCKER_CODE_PROXY:-}" ]; then
+            export HTTP_PROXY="${DOCKER_CODE_PROXY}" HTTPS_PROXY="${DOCKER_CODE_PROXY}"
+            export http_proxy="${DOCKER_CODE_PROXY}" https_proxy="${DOCKER_CODE_PROXY}"
+            export NO_PROXY="localhost,127.0.0.1" no_proxy="localhost,127.0.0.1"
+        fi
         exec /usr/bin/dockerd-rootless.sh "${dockerd_args[@]}"
     ) &
     local dockerd_pid=$!

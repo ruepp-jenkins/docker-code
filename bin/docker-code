@@ -50,7 +50,7 @@ SELF_PATH="$(resolve_self "$0")"
 DOCKER_CODE_ROOT="${DOCKER_CODE_ROOT:-$(cd -P "$(dirname "$(dirname "${SELF_PATH}")")" && pwd)}"
 export DOCKER_CODE_ROOT
 
-for lib in agents mirror models; do
+for lib in agents mirror models egress; do
     [ -f "${DOCKER_CODE_ROOT}/lib/${lib}.sh" ] ||
         die "cannot find lib/${lib}.sh under ${DOCKER_CODE_ROOT}; set DOCKER_CODE_ROOT to the checkout"
     # shellcheck source=/dev/null
@@ -209,6 +209,10 @@ run_session() {
     local dind_is_default=1 mirror_is_default=1
     agent_knob_is_set DIND && dind_is_default=0
     agent_knob_is_set REGISTRY_MIRROR && mirror_is_default=0
+
+    # Whether this session is the one that started the gateway, and so the one that has to stop it.
+    # Set by session_egress; declared here because session_cleanup reads it on every path.
+    manage_egress=0
 
     local STORAGE_DIR="${STORAGE_ROOT}/${AGENT_ID}"
 
@@ -377,14 +381,15 @@ run_session() {
         exit 0
     fi
 
-    # A trap rather than a line after the run: a session ended with Ctrl-C should turn the mirror off
-    # just as a session that exited normally does.
-    if [ "${manage_mirror}" = "1" ]; then
-        trap mirror_stop EXIT INT TERM
+    # A trap rather than a line after the run: a session ended with Ctrl-C should turn the mirror and
+    # the gateway off just as a session that exited normally does.
+    if [ "${manage_mirror}" = "1" ] || [ "${manage_egress}" = "1" ]; then
+        trap session_cleanup EXIT INT TERM
     fi
 
     # Nothing to retry, nothing to switch off afterwards: hand the process over and be gone.
-    if [ -z "${container_name}" ] && [ "${manage_mirror}" = "0" ]; then
+    if [ -z "${container_name}" ] && [ "${manage_mirror}" = "0" ] &&
+        [ "${manage_egress}" = "0" ]; then
         exec "${run[@]}"
     fi
 
@@ -429,6 +434,19 @@ run_session() {
 
 taken_names() {
     docker ps --all --format '{{.Names}}' 2>/dev/null
+}
+
+# One trap for both shared services, because a session can be the last user of either. Each of these
+# counts running sessions for itself and returns early when another one is still up, so calling both
+# unconditionally is correct.
+# shellcheck disable=SC2317  # reached through the trap installed before the run, not by a call
+session_cleanup() {
+    [ "${manage_mirror}" = "1" ] && mirror_stop
+    if [ "${manage_egress}" = "1" ]; then
+        egress_stop "${AGENT_ID}"
+        egress_services_stop
+    fi
+    return 0
 }
 
 next_free_slot() {
@@ -567,6 +585,9 @@ session_dind() {
 }
 
 session_network() {
+    egress_mode=0
+    egress_proxy=""
+
     case "$1" in
         full)
             ;;
@@ -575,13 +596,90 @@ session_network() {
             # iptables rules for its own namespace.
             run+=(--cap-add NET_ADMIN --cap-add NET_RAW)
             ;;
+        gateway)
+            session_egress
+            ;;
         none)
             run+=(--network none)
             ;;
         *)
-            die "DOCKER_CODE_NET must be one of: full, restricted, none"
+            die "DOCKER_CODE_NET must be one of: full, restricted, gateway, none"
             ;;
     esac
+}
+
+# ---------------------------------------------------------------------------------------------
+# The egress gateway
+#
+# Deliberately not shaped like session_mirror or session_local_models, which warn and carry on when
+# their service will not start. A session that asked to be filtered and then runs unfiltered is worse
+# than one that does not start, so every failure here is fatal.
+#
+# Sets two globals the later session_* functions read: egress_mode, so they attach the gateway to
+# their networks instead of the session, and egress_proxy, the URL everything inside is pointed at.
+# ---------------------------------------------------------------------------------------------
+session_egress() {
+    local domains=()
+
+    [ -n "${AGENT_DOMAINS}" ] ||
+        warn "agents/${AGENT_ID}/agent.env names no AGENT_DOMAINS, so ${AGENT_TITLE} will not reach" \
+             "its own API through the gateway"
+
+    # shellcheck disable=SC2206  # a space-separated list from agent.env is the documented format
+    domains=(${AGENT_DOMAINS} "${EGRESS_COMMON_DOMAINS[@]}")
+
+    # Only when there is an inner daemon to pull images, matching how init-firewall.sh scopes the
+    # same list.
+    case "${DIND_MODE}" in
+        0|false|none) ;;
+        *) domains+=("${EGRESS_REGISTRY_DOMAINS[@]}") ;;
+    esac
+
+    [ "$(agent_knob ALLOW_GITHUB 1)" = "1" ] && domains+=("${EGRESS_GITHUB_DOMAINS[@]}")
+
+    local extra
+    extra="$(agent_knob ALLOW_DOMAINS "")"
+    if [ -n "${extra}" ]; then
+        # shellcheck disable=SC2206  # a comma/space separated list is the documented interface
+        extra=(${extra//,/ })
+        domains+=("${extra[@]}")
+    fi
+
+    egress_mode=1
+    egress_proxy="$(egress_url "${AGENT_ID}")"
+
+    if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
+        egress_start "${AGENT_ID}" "${domains[@]}" ||
+            die "the egress gateway for ${AGENT_ID} did not start, and DOCKER_CODE_NET=gateway" \
+                "must not fall back to unfiltered egress. Start with DOCKER_CODE_NET=restricted" \
+                "for the in-container firewall, or DOCKER_CODE_NET=full for no filtering."
+        manage_egress=1
+    fi
+
+    # The session's only network, and an internal one, so the proxy is the sole route out. No
+    # capabilities: nothing in the container writes a firewall rule in this mode.
+    run+=(--network "$(egress_network "${AGENT_ID}")")
+
+    # Both spellings, because the tools disagree about which they read: curl and git want the
+    # lowercase pair, most Go and Node tooling accepts either.
+    local var
+    for var in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+        run+=(--env "${var}=${egress_proxy}")
+    done
+
+    # Loopback only. The local-model bridge listens on 127.0.0.1 and forwards through the proxy
+    # itself, so sending loopback traffic back through it would be a loop; the service *names* must
+    # go through it, so they are deliberately absent here.
+    run+=(--env "NO_PROXY=localhost,127.0.0.1" --env "no_proxy=localhost,127.0.0.1")
+
+    # Read by image/entrypoint.sh, which points both inner Docker daemons and nested containers at
+    # the same proxy.
+    run+=(--env "DOCKER_CODE_PROXY=${egress_proxy}")
+
+    if [ "$(agent_knob SSH 0)" = "1" ]; then
+        warn "a CONNECT proxy does not carry SSH, so git over SSH will fail under NET=gateway."
+        warn "Clone over HTTPS, or see the ProxyCommand in docs/EGRESS.md."
+    fi
 }
 
 session_mirror() {
@@ -624,9 +722,17 @@ session_mirror() {
     if [ "${manage_mirror}" = "1" ]; then
         if [ "${DOCKER_CODE_DRY_RUN:-0}" = "1" ]; then
             # A dry run describes what would happen. Starting a container is not a description.
-            run+=(--network "${MIRROR_NETWORK}")
+            [ "${egress_mode}" = "1" ] || run+=(--network "${MIRROR_NETWORK}")
         elif mirror_start; then
-            run+=(--network "${MIRROR_NETWORK}")
+            # In gateway mode the session must not join the mirror's network: that network has a
+            # route off the host, which would be a way around the proxy. The *gateway* joins it
+            # instead, and the inner daemon reaches the mirror by CONNECTing through it.
+            if [ "${egress_mode}" = "1" ]; then
+                egress_connect "$(egress_container "${AGENT_ID}")" "${MIRROR_NETWORK}" ||
+                    warn "the gateway could not join ${MIRROR_NETWORK}; Hub pulls will not be cached"
+            else
+                run+=(--network "${MIRROR_NETWORK}")
+            fi
         else
             warn "could not start the registry mirror (${MIRROR_IMAGE}); continuing without it"
             mirror_url=""
@@ -676,7 +782,18 @@ session_local_models() {
         }
     fi
 
-    run+=(--network "${MODELS_NETWORK}")
+    # Same reasoning as the mirror above: the model network has a route off the host, so in gateway
+    # mode the gateway joins it and the session does not. The loopback bridge inside the container
+    # then reaches Ollama and LiteLLM by CONNECTing through the proxy, which is why the bridge spec
+    # is still handed over unchanged.
+    if [ "${egress_mode}" = "1" ]; then
+        if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
+            egress_connect "$(egress_container "${AGENT_ID}")" "${MODELS_NETWORK}" ||
+                warn "the gateway could not join ${MODELS_NETWORK}; local models will be unreachable"
+        fi
+    else
+        run+=(--network "${MODELS_NETWORK}")
+    fi
     run+=(--env "DOCKER_CODE_LOCAL_BRIDGE=$(models_bridge_spec)")
     run+=(--env "DOCKER_CODE_LOCAL_URL=${url}")
     [ -z "${model}" ] || run+=(--env "DOCKER_CODE_LOCAL_MODEL=${model}")
@@ -854,6 +971,49 @@ cmd_registry() {
     esac
 }
 
+# Gateways are per agent and come and go with sessions, so this reports on all of them at once rather
+# than taking an agent argument for the common case. `logs` is the point of the command: it is the
+# only place that says what a session tried to reach and what was refused.
+cmd_egress() {
+    require_docker
+    local id container state
+
+    case "${1:-status}" in
+        status)
+            printf '%-28s %-10s %s\n' GATEWAY STATE ALLOWLIST
+            for id in $(agent_ids) "${EGRESS_SERVICES_ID}"; do
+                container="$(egress_container "${id}")"
+                state="$(docker inspect -f '{{.State.Status}}' "${container}" 2>/dev/null || true)"
+                [ -n "${state}" ] || continue
+                printf '%-28s %-10s %s\n' "${container}" "${state}" "$(egress_dir "${id}")/squid.conf"
+            done
+            ;;
+        stop)
+            shift
+            # container_name empty so the session counters do not exclude anything: an explicit stop
+            # means stop, and the trap on a live session would restart nothing.
+            container_name=""
+            if [ "$#" -gt 0 ]; then
+                for id in "$@"; do
+                    agent_load "${id}" >/dev/null 2>&1 || die "no agent is registered as '${id}'"
+                    egress_stop "${id}"
+                done
+            else
+                for id in $(agent_ids); do egress_stop "${id}"; done
+                egress_services_stop
+            fi
+            ;;
+        logs)
+            shift
+            [ "$#" -gt 0 ] || die "usage: docker-code egress logs <agent>"
+            agent_load "$1" >/dev/null 2>&1 || die "no agent is registered as '$1'"
+            docker logs --tail 200 "$(egress_container "$1")" 2>&1 ||
+                die "no gateway is running for $1"
+            ;;
+        *) die "unknown: docker-code egress $1 (status, stop [agent...], logs <agent>)" ;;
+    esac
+}
+
 cmd_build() {
     require_docker
     [ -x "${DOCKER_CODE_ROOT}/scripts/build.sh" ] ||
@@ -969,12 +1129,13 @@ Usage:
   docker-code self-update         update docker-code itself, the agents and the wrappers
   docker-code models <cmd>        up | down | status | pull <m> | list | rm <m> | run <m> | logs
   docker-code registry <cmd>      start | stop | status  (Docker Hub pull-through cache)
+  docker-code egress <cmd>        status | stop [agent...] | logs <agent>  (NET=gateway proxies)
   docker-code doctor              what is installed, valid and present
   docker-code help                this text
 
 Session knobs (prefix DOCKER_CODE_, or DOCKER_CODE_<AGENT>_ for one agent):
   YOLO=1                run without permission prompts
-  NET=full|restricted|none        egress policy (default: full)
+  NET=full|restricted|gateway|none  egress policy (default: full)
   DIND=privileged|rootless|0      inner Docker (default: privileged)
   LOCAL=1               use the shared local models
   LOCAL_MODEL=<name>    which one (docker-code models list)
@@ -989,11 +1150,12 @@ State lives in ${STORAGE_ROOT}:
   <agent>/    that agent's entire home directory inside its container
   models/     the weights every agent shares
   registry/   the Docker Hub pull-through cache
+  egress/     the generated allowlist per gateway
   shared/     opt-in, mounted into every agent at ~/shared
 
 Your real home directory is never mounted into a container. Full documentation: README.md,
 AGENTS.md (AI project instructions), ai/adding-an-agent.md, docs/LOCAL-MODELS.md,
-docs/REGISTRY.md.
+docs/REGISTRY.md, docs/EGRESS.md.
 EOF
 }
 
@@ -1023,6 +1185,7 @@ case "${1:-help}" in
     self-update|selfupdate) shift; cmd_self_update "$@" ;;
     models)    shift; cmd_models "$@" ;;
     registry)  shift; cmd_registry "$@" ;;
+    egress)    shift; cmd_egress "$@" ;;
     doctor)    cmd_doctor ;;
     help|-h|--help) cmd_help ;;
     *)

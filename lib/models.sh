@@ -147,6 +147,23 @@ models_start_ollama() {
         --restart unless-stopped
         --volume "${store}:/root/.ollama")
 
+    # Ollama's own pull from ollama.com. As with the registry mirror, a session's gateway says nothing
+    # about this container — it sits on the host and fetches on its own account — so under gateway
+    # mode it is pointed at the shared-services gateway unless DOCKER_CODE_MODELS_EGRESS says
+    # otherwise. Advisory rather than enforced, and docs/EGRESS.md says so: this network has a route
+    # out because non-gateway sessions attach to it for theirs.
+    #
+    # Applied here and not to LiteLLM: see egress_proxy_env in lib/egress.sh for why that would break
+    # the gateway's only useful call.
+    local ollama_proxy=""
+    if [ "${egress_mode:-0}" = "1" ]; then
+        ollama_proxy="$(egress_service_proxy "${DOCKER_CODE_MODELS_EGRESS:-1}")"
+    fi
+    egress_proxy_env "${ollama_proxy}"
+    # shellcheck disable=SC2154  # set by egress_proxy_env in lib/egress.sh, sourced alongside this
+    [ "${#egress_proxy_env_args[@]}" -eq 0 ] || models_ollama_create+=("${egress_proxy_env_args[@]}")
+    models_ollama_create+=(--label "${MODELS_LABEL}.egress=${ollama_proxy:-direct}")
+
     # A GPU if the host has one wired into Docker; CPU inference otherwise. Asking for a GPU that is
     # not there is a hard `docker run` error, so `auto` detects rather than assumes.
     #

@@ -82,6 +82,7 @@ Everything via environment variable so that it composes itself with the wrapper.
 |---|---|---|
 | `YOLO=1` | `0` | without authorization queries — the right flag for each tool |
 | `NET=restricted` | `full` | Egress only to the tool's domains (iptables + ipset) |
+| `NET=gateway` | | Egress only to the tool's domains, filtered by **name** in a proxy container ([EGRESS.md](docs/EGRESS.md)) |
 | `NET=none` | | no network at all |
 | `DIND=0` \| `rootless` \| `privileged` | `privileged` | inner docker daemon |
 | `LOCAL=1` | `0` | use the common local models |

@@ -771,6 +771,23 @@ docker-code models logs [container]
 
 If something doesn't start, it's a warning and not a failed session: the agent then continues to run with its cloud provider. A model gateway is worth less than the session it would otherwise prevent.
 
+## Under `DOCKER_CODE_NET=gateway`
+
+Local models keep working, but the session no longer joins the model network — that network has a
+route off the host, which would be a way around the egress gateway. The gateway joins it instead, and
+the loopback bridge inside the container tunnels to Ollama and LiteLLM through the proxy. Nothing about
+the configuration in this file changes.
+
+Ollama's own pull from ollama.com is a separate matter, governed by one variable:
+
+| variable | Default | Effect |
+|---|---|---|
+| `DOCKER_CODE_MODELS_EGRESS` | `1` | under `NET=gateway` only: `1` routes Ollama's model pulls through the shared-services gateway, `0` goes direct, or give a proxy URL |
+
+This is advisory rather than enforced, and [EGRESS.md](EGRESS.md#the-shared-services-are-a-different-question)
+explains why. LiteLLM is deliberately never given a proxy: it reaches Ollama by container name, so a
+proxy would route its one useful call through a gateway with no reason to allow it.
+
 ## Disk space
 
 ```bash

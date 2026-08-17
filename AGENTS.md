@@ -82,6 +82,22 @@ cache. `image/local-models.sh` forwards container-local ports `11434` and `4000`
 hard-code localhost. See [Local models](docs/LOCAL-MODELS.md) and
 [Registry and image tags](docs/REGISTRY.md).
 
+`lib/egress.sh` follows the same lifecycle pattern with one deliberate exception: it does **not**
+degrade to a warning. A session that asked to be filtered and then runs unfiltered is worse than one
+that does not start, so `session_egress` dies where `session_mirror` warns.
+
+### Two egress mechanisms
+
+`DOCKER_CODE_NET` has two filtering modes, and they enforce differently:
+
+- `restricted` — `image/init-firewall.sh` inside the container, matching on **destination IP** from an
+  ipset resolved once at startup. Needs `NET_ADMIN` in the session.
+- `gateway` — `lib/egress.sh` starts a squid container per agent, matching on **domain name** per
+  request. The session gets an `--internal` network and no capabilities, so containment is topological.
+
+A change to what a session may reach usually belongs in both. `tests/egress.bats` compares the two
+common-domain lists for exactly that reason. See [Egress](docs/EGRESS.md).
+
 ## Project constraints
 
 - Never install an agent into `/home/agent` in a Dockerfile. The first real start replaces that path
