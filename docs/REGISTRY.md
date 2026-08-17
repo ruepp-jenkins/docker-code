@@ -95,7 +95,36 @@ container on the host, outside the firewall, and no CDN address has to be guesse
 
 ## Other registries
 
-The mirror only applies to Docker Hub — this is how `--registry-mirror` works in Docker. For an internal registry via simple HTTP:
+The mirror only applies to Docker Hub — this is how `--registry-mirror` works in Docker. A pull from
+`ghcr.io`, `quay.io`, `mcr.microsoft.com` or any other registry therefore goes out on its own account,
+with the mirror on and with it off alike, and under a filtering `DOCKER_CODE_NET` it needs a place on
+the allowlist to do so.
+
+The mainstream ones are on it by default whenever the session has an inner Docker daemon — Docker Hub,
+MCR, ghcr.io, Quay, GitLab, GCR and Artifact Registry, ECR Public, and `registry.k8s.io`.
+[EGRESS.md](EGRESS.md#the-image-registries) lists the hosts each one contributes and applies to both
+filtering modes.
+
+What is worth knowing when one of them fails: a registry answers a layer request with a redirect to a
+different host, so an allowlist that names only the API host gets you through authentication and the
+manifest and then hangs on the first blob. If a pull stalls that way, the host in the redirect is what
+is missing:
+
+```bash
+export DOCKER_CODE_ALLOW_DOMAINS="cdn.example-registry.io"
+```
+
+Under `DOCKER_CODE_NET=gateway` the proxy log names it for you:
+
+```bash
+docker logs docker-code-egress-claude | grep TCP_DENIED
+```
+
+Under `DOCKER_CODE_NET=restricted` there is no such log — the packet is dropped by the OUTPUT policy
+and the daemon reports an i/o timeout — which is one reason `gateway` is the easier mode to debug a
+registry against.
+
+For an internal registry via simple HTTP:
 
 ```bash
 export DOCKER_CODE_INSECURE_REGISTRIES="registry.intern:5000"

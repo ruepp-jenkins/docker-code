@@ -42,13 +42,49 @@ COMMON_DOMAINS=(
 # resolve; hosts are enumerated instead. That also makes this list a snapshot — a CDN edge rotates
 # faster than a long session lasts, which is what the pull-through cache in lib/mirror.sh avoids by
 # keeping Hub traffic off the allowlist entirely.
+#
+# The cache only helps Docker Hub, though: `--registry-mirror` proxies Hub and nothing else, so every
+# other registry below is pulled from directly whether the mirror is running or not. Each therefore
+# needs both halves named — the API host and wherever it redirects the layer to.
+#
+# Kept in step with EGRESS_REGISTRY_DOMAINS in lib/egress.sh, which says the same thing in wildcards;
+# tests/egress.bats compares the two. Where a registry fans out over per-region hosts that cannot be
+# enumerated here, the common ones are listed and DOCKER_CODE_ALLOW_DOMAINS covers the rest.
 REGISTRY_DOMAINS=(
     registry-1.docker.io             # Docker Hub, registry API
     index.docker.io                  # Docker Hub, where an older client starts before redirecting
     auth.docker.io                   # Docker Hub, pull tokens
     production.cloudflare.docker.com # Docker Hub, blob storage via Cloudflare
     production.cloudfront.docker.com # Docker Hub, blob storage via CloudFront — a different network
-    mcr.microsoft.com                # Microsoft Container Registry
+
+    mcr.microsoft.com                # Microsoft, registry API
+    westus.data.mcr.microsoft.com    # Microsoft, blobs — MCR redirects to a regional data endpoint,
+    eastus.data.mcr.microsoft.com    #   so the API host alone gets a manifest and then hangs
+    westeurope.data.mcr.microsoft.com
+    westcentralus.data.mcr.microsoft.com
+
+    ghcr.io                          # GitHub Container Registry, registry API
+    pkg-containers.githubusercontent.com # GitHub Container Registry, blobs
+
+    quay.io                          # Red Hat Quay, registry API
+    cdn.quay.io                      # Red Hat Quay, blobs
+    cdn01.quay.io
+    cdn02.quay.io
+    cdn03.quay.io
+
+    registry.gitlab.com              # GitLab, registry API
+    gcr.io                           # Google Container Registry
+    us.gcr.io
+    eu.gcr.io
+    asia.gcr.io
+    us-docker.pkg.dev                # Google Artifact Registry, per-region hosts
+    europe-docker.pkg.dev
+    asia-docker.pkg.dev
+    storage.googleapis.com           # blobs for all of GitLab, GCR and Artifact Registry
+
+    public.ecr.aws                   # Amazon ECR Public, registry API
+    registry.k8s.io                  # Kubernetes; its blobs come from the GCS host above, or from a
+                                     #   per-region S3 bucket that has to go in ALLOW_DOMAINS
 )
 
 log() { echo "firewall: $*" >&2; }

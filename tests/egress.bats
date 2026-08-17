@@ -149,6 +149,55 @@ progress_preamble() {
     done
 }
 
+@test "every registry the in-container firewall names is reachable under the gateway too" {
+    # The same promise the common domains carry, for the registry half: a `docker pull` from ghcr.io
+    # or quay.io that works under NET=restricted but hangs under NET=gateway is a difference nobody
+    # would predict from the names of the modes. The gateway list is wildcards and the firewall list
+    # is hosts, so each host must be either present verbatim or covered by one of those wildcards.
+    block="$(sed -n '/^REGISTRY_DOMAINS=(/,/^)/p' "${REPO_ROOT}/image/init-firewall.sh")"
+    eval "${block}"
+    run bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_REGISTRY_DOMAINS[@]}\""
+    [ "${status}" -eq 0 ]
+    gateway="${output}"
+
+    for domain in "${REGISTRY_DOMAINS[@]}"; do
+        printf '%s\n' "${gateway}" | grep -qxF "${domain}" && continue
+        run bash -c "
+            . '${REPO_ROOT}/lib/egress.sh'
+            egress_domain_covered '${domain}' '${gateway}' && echo COVERED
+        "
+        [[ "${output}" == *COVERED* ]] || {
+            echo "${domain} is allowed under NET=restricted but nothing in"
+            echo "EGRESS_REGISTRY_DOMAINS covers it, so NET=gateway would refuse the pull"
+            return 1
+        }
+    done
+}
+
+@test "each registry contributes its blob host, not only its API host" {
+    # The failure this whole list exists to prevent, and the one that keeps coming back: the token
+    # and the manifest succeed, then the layer request is redirected to a host nobody allowed and the
+    # pull hangs until the daemon reports an i/o timeout. mcr.microsoft.com shipped that way — the
+    # exact host was listed, its <region>.data.mcr.microsoft.com blob endpoint was not.
+    run bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_REGISTRY_DOMAINS[@]}\""
+    [ "${status}" -eq 0 ]
+
+    # api-host -> the entry that has to accompany it for a layer to arrive
+    for pair in \
+        "mcr.microsoft.com:.mcr.microsoft.com" \
+        "ghcr.io:pkg-containers.githubusercontent.com" \
+        "registry.gitlab.com:storage.googleapis.com" \
+        "quay.io:.quay.io"
+    do
+        api="${pair%%:*}"
+        blob="${pair##*:}"
+        printf '%s\n' "${output}" | grep -qxF "${blob}" || {
+            echo "${api} is allowed but ${blob} is not, so its layers would never arrive"
+            return 1
+        }
+    done
+}
+
 @test "a host a wildcard already covers is pruned, because squid calls that fatal" {
     # Not a tidiness rule. squid refuses the whole config:
     #   ERROR: 'raw.githubusercontent.com' is a subdomain of '.githubusercontent.com'

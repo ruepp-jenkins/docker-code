@@ -60,11 +60,46 @@ EGRESS_COMMON_DOMAINS=(
 # whichever CDN Hub picked for the layer — Cloudflare or CloudFront, on unrelated networks. Listing
 # one and not the other is what made `docker run hello-world` time out halfway through a pull.
 # `.docker.com` covers both, and covers the next CDN Hub adds without an edit here.
+#
+# The same split applies to every registry below, which is why each one contributes an API host *and*
+# wherever it hands the layer off to. The pull-through cache in lib/mirror.sh does not help here: it
+# proxies Docker Hub only, because that is all `--registry-mirror` does, so a ghcr.io or quay.io pull
+# goes out on its own account whether the mirror is running or not.
+#
+# Kept in step with REGISTRY_DOMAINS in image/init-firewall.sh; tests/egress.bats compares the two.
 # shellcheck disable=SC2034
 EGRESS_REGISTRY_DOMAINS=(
+    # Docker Hub: registry-1/index/auth under .docker.io, both blob CDNs under .docker.com.
     .docker.io
     .docker.com
-    mcr.microsoft.com
+
+    # Microsoft. The wildcard is not decoration: mcr.microsoft.com answers a blob request with a
+    # redirect to a regional <region>.data.mcr.microsoft.com, which is what the old exact entry here
+    # missed — authentication and manifest succeeded and the first layer hung.
+    .mcr.microsoft.com
+
+    # GitHub. Blobs come from pkg-containers.githubusercontent.com, a different host from the API
+    # one. Listed rather than left to EGRESS_GITHUB_DOMAINS, because ALLOW_GITHUB=0 must not take
+    # ghcr.io down with it; the pruning in egress_prune_domains drops it again when both are on.
+    ghcr.io
+    pkg-containers.githubusercontent.com
+
+    # Red Hat. Layers come from cdn.quay.io and the numbered cdn01…cdn03 siblings.
+    .quay.io
+
+    # GitLab, Google Container Registry and Artifact Registry. All three sign a GCS URL for the blob,
+    # so storage.googleapis.com is the shared half; .pkg.dev covers the regional Artifact Registry
+    # hosts (us-docker.pkg.dev and the rest).
+    registry.gitlab.com
+    .gcr.io
+    .pkg.dev
+    storage.googleapis.com
+
+    # Amazon's public registry and the Kubernetes one. registry.k8s.io picks a backend by client
+    # geography — .pkg.dev and storage.googleapis.com above cover its GCP side, and the S3 side needs
+    # a bucket named per region, which is what DOCKER_CODE_ALLOW_DOMAINS is for.
+    public.ecr.aws
+    registry.k8s.io
 )
 
 # Cloning and `gh` are close enough to table stakes for a coding agent to be on by default. Two names

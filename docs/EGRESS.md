@@ -87,9 +87,37 @@ written once and left to you. This file *is* the policy; a stale copy is a wrong
 |---|---|
 | `AGENT_DOMAINS` from `agents/<id>/agent.env` | the agent's own vendor, verbatim |
 | built in | `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `raw.githubusercontent.com` |
-| built in, when there is an inner Docker | `.docker.io`, `.docker.com`, `mcr.microsoft.com` |
+| built in, when there is an inner Docker | the image registries — see below |
 | `DOCKER_CODE_ALLOW_GITHUB=1` (the default) | `.github.com`, `.githubusercontent.com` |
 | `DOCKER_CODE_ALLOW_DOMAINS` | yours, verbatim — names or CIDRs |
+
+### The image registries
+
+A session with an inner Docker daemon gets these, so that `docker pull` works against the registries
+people actually use rather than Docker Hub alone. Each entry pairs the registry's API host with
+whatever it redirects the layer to, because a pull that is allowed to fetch a manifest but not a blob
+hangs until the daemon reports an i/o timeout — which reads as a broken network, not as a policy
+decision.
+
+| registry | allowed |
+|---|---|
+| Docker Hub | `.docker.io`, `.docker.com` |
+| Microsoft (MCR) | `.mcr.microsoft.com` — the wildcard carries the regional `*.data.mcr.microsoft.com` blob endpoints |
+| GitHub (ghcr.io) | `ghcr.io`, `pkg-containers.githubusercontent.com` |
+| Red Hat (Quay) | `.quay.io` — covers `cdn.quay.io` and `cdn01`…`cdn03` |
+| GitLab | `registry.gitlab.com` + `storage.googleapis.com` |
+| Google (GCR, Artifact Registry) | `.gcr.io`, `.pkg.dev` + `storage.googleapis.com` |
+| Amazon ECR Public | `public.ecr.aws` |
+| Kubernetes | `registry.k8s.io` |
+
+This applies whether or not the [pull-through cache](REGISTRY.md) is running: `--registry-mirror`
+proxies Docker Hub and nothing else, so every other registry here is fetched from directly either way.
+
+Two registries need a word of warning. `registry.k8s.io` chooses a backend by client geography, and
+its AWS side signs a per-region S3 bucket that cannot be named in advance; the same is true of
+Amazon ECR Public's layer bucket. If a pull from either stalls after the manifest, add the bucket the
+redirect names to `DOCKER_CODE_ALLOW_DOMAINS`. Under `NET=gateway` the refusal is in the proxy log —
+`docker logs docker-code-egress-<agent>` — which is the fastest way to find out which host it wanted.
 
 `AGENT_DOMAINS` is emitted exactly as written, never widened into a wildcard. Those names still have
 to resolve for `NET=restricted`, and `.openai.com` resolves to nothing — and deriving a subtree from a
