@@ -80,6 +80,18 @@ docker-code registry start|stop|status
 - Every failure becomes a warning and the session continues without the mirror. A cache must never
   prevent an agent session from starting.
 
+## Hub pulls without the mirror, under `restricted`
+
+With the mirror off, the inner daemon pulls from Docker Hub through the container firewall, and
+`image/init-firewall.sh` names the hosts that takes: the registry API, the token endpoint, and
+**both** blob CDNs — Hub answers a layer request with a redirect to Cloudflare or to CloudFront, and
+which one it picks is not something the client controls.
+
+That list is resolved once, at container start, into a set of addresses. A CDN edge can rotate
+within the lifetime of a long session, so a pull that worked at the start can time out later with
+nothing having changed. Turning the mirror on is the durable answer: Hub traffic then goes to a
+container on the host, outside the firewall, and no CDN address has to be guessed in advance.
+
 ## Other registries
 
 The mirror only applies to Docker Hub — this is how `--registry-mirror` works in Docker. For an internal registry via simple HTTP:

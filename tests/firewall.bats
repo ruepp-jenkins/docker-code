@@ -46,6 +46,21 @@ FIREWALL="${BATS_TEST_DIRNAME}/../image/init-firewall.sh"
     grep -q 'case "${DOCKER_CODE_DIND:-0}" in' "${FIREWALL}"
 }
 
+@test "both Docker Hub blob CDNs are allowed, not just one" {
+    # Hub answers a layer request with a 307 to Cloudflare or to CloudFront, and which one it picks is
+    # not ours to decide. Listing a single CDN produced a pull that authenticated, read its manifest,
+    # and then timed out on the first layer — far enough in to look like the restriction being too
+    # strict in general rather than one missing name.
+    block="$(sed -n '/^REGISTRY_DOMAINS=(/,/^)/p' "${FIREWALL}")"
+    eval "${block}"
+
+    for domain in production.cloudflare.docker.com production.cloudfront.docker.com; do
+        printf '%s\n' "${REGISTRY_DOMAINS[@]}" | grep -qxF "${domain}" || {
+            echo "${domain} is missing from REGISTRY_DOMAINS"; return 1
+        }
+    done
+}
+
 @test "the allowlist is resolved before the policy becomes DROP" {
     # Once OUTPUT is DROP, DNS and the GitHub metadata fetch would be blocked by the very rules being
     # installed.

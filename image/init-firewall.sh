@@ -30,10 +30,24 @@ COMMON_DOMAINS=(
 # Docker Hub is in here for the case where the pull-through cache is switched off. With the cache on,
 # Hub pulls never leave the container's own network — the mirror runs on the host, outside these
 # rules — which is also why `restricted` and an inner Docker work together at all.
+#
+# Both blob CDNs have to be named. A pull takes its token from auth.docker.io and its manifest from
+# registry-1.docker.io, then follows a 307 to whichever CDN Hub picks for the layer itself, and the
+# two are unrelated networks — Cloudflare answers from 104.16.0.0/12, CloudFront from Amazon's
+# ranges. With only one listed, a pull gets through authentication and the manifest and then hangs on
+# the first layer: the OUTPUT policy is DROP, so the packet is swallowed and the daemon reports an
+# i/o timeout rather than a refusal.
+#
+# Every name here is resolved into an ipset of addresses, so a wildcard would have nothing to
+# resolve; hosts are enumerated instead. That also makes this list a snapshot — a CDN edge rotates
+# faster than a long session lasts, which is what the pull-through cache in lib/mirror.sh avoids by
+# keeping Hub traffic off the allowlist entirely.
 REGISTRY_DOMAINS=(
     registry-1.docker.io             # Docker Hub, registry API
+    index.docker.io                  # Docker Hub, where an older client starts before redirecting
     auth.docker.io                   # Docker Hub, pull tokens
-    production.cloudflare.docker.com # Docker Hub, blob storage
+    production.cloudflare.docker.com # Docker Hub, blob storage via Cloudflare
+    production.cloudfront.docker.com # Docker Hub, blob storage via CloudFront — a different network
     mcr.microsoft.com                # Microsoft Container Registry
 )
 
