@@ -245,9 +245,11 @@ example="${example%%$'\n'*}"
 echo
 case ":${PATH}:" in
     *":${INSTALL_DIR}:"*)
-        echo "Next: build the images once, then start an agent from a project directory."
-        echo "    docker-code build"
+        echo "Next: start an agent from a project directory. Its image is pulled on first use."
         echo "    cd ~/my-project && ${example}"
+        echo
+        echo "    docker-code list      the agents and their wrappers, as above"
+        echo "    docker-code update    pull the published images ahead of time"
         ;;
     *)
         rc="${HOME}/.bashrc"
@@ -256,6 +258,6 @@ case ":${PATH}:" in
         esac
         echo "${INSTALL_DIR} is not on your PATH. Add it:"
         echo "    echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ${rc}"
-        echo "then open a new shell and run: docker-code build"
+        echo "then open a new shell and run: docker-code list"
         ;;
 esac

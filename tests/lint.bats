@@ -221,3 +221,19 @@ EOF
         return 1
     }
 }
+
+@test "the installer sends you to the published images, not to a local build" {
+    # `docker run` pulls the image the first time an agent starts, so a fresh install is one command
+    # away from working. Telling someone to build nine images first puts an hour in front of the
+    # thing they came to do, and building is the exception rather than the normal path.
+    # Only what is printed. The comment above it names the command it is deliberately not using, and
+    # matching that would make the test fail on its own explanation.
+    block="$(sed -n '/case ":${PATH}:"/,/^esac$/p' "${REPO_ROOT}/install.sh" |
+        grep '^[[:space:]]*echo')"
+    [ -n "${block}" ]
+    [[ "${block}" != *"docker-code build"* ]] || {
+        echo "the installer's closing hint still points at docker-code build:"
+        printf '%s\n' "${block}"
+        return 1
+    }
+}
