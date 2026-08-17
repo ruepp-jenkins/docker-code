@@ -86,10 +86,47 @@ written once and left to you. This file *is* the policy; a stale copy is a wrong
 | source | contents |
 |---|---|
 | `AGENT_DOMAINS` from `agents/<id>/agent.env` | the agent's own vendor, verbatim |
-| built in | `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `raw.githubusercontent.com` |
+| built in | the language package registries — see below |
 | built in, when there is an inner Docker | the image registries — see below |
 | `DOCKER_CODE_ALLOW_GITHUB=1` (the default) | `.github.com`, `.githubusercontent.com` |
 | `DOCKER_CODE_ALLOW_DOMAINS` | yours, verbatim — names or CIDRs |
+
+### The language package registries
+
+Every session gets these, whether or not it has an inner Docker. An agent that cannot run the
+project's own build is not much use on it: pointed at a .NET repository without `nuget.org`, it fails
+at `dotnet restore` before it has read any of the code it was asked about.
+
+| ecosystem | allowed |
+|---|---|
+| JavaScript, TypeScript | `registry.npmjs.org`, `registry.yarnpkg.com`, `jsr.io` |
+| Python | `pypi.org`, `files.pythonhosted.org` |
+| .NET | `.nuget.org` |
+| Java, Kotlin, Scala | `repo.maven.apache.org`, `.maven.org`, `.gradle.org` |
+| Go | `.golang.org` — the proxy, the checksum database and the index |
+| Rust | `.crates.io`, `.rust-lang.org` |
+| Ruby | `.rubygems.org` |
+| PHP | `.packagist.org`, `getcomposer.org` |
+| Dart, Flutter | `pub.dev` + `storage.googleapis.com` |
+| Elixir, Erlang | `.hex.pm` |
+| — | `raw.githubusercontent.com` |
+
+Most of these are two hosts, not one, because the ecosystem splits metadata from artifacts: `cargo`
+resolves versions against `index.crates.io` and then fetches the `.crate` from `static.crates.io`.
+Allowing only the first produces a build that resolves and then hangs — which reads as a broken
+network rather than a policy decision, so both halves are always listed.
+
+Two ecosystems lean on hosts outside their own domain. Composer resolves most `dist` URLs to
+`codeload.github.com`, so PHP works in practice only with `DOCKER_CODE_ALLOW_GITHUB` left on, and
+`pub.dev` keeps its archives on `storage.googleapis.com`.
+
+Deliberately not here: Conda, CRAN, CocoaPods, Hackage, CPAN and the rest of the long tail. Each name
+on this list is somewhere a session may send data, so the default stops at what a mainstream project
+needs to build. Add what yours wants:
+
+```bash
+export DOCKER_CODE_ALLOW_DOMAINS="conda.anaconda.org,repo.anaconda.com"
+```
 
 ### The image registries
 

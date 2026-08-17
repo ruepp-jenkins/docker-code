@@ -44,13 +44,58 @@ EGRESS_SERVICES_ID="services"
 # is the only consumer — hence the disables; they are the interface of this file, not dead weight.
 #
 # Package registries any agent reaches for when it launches an MCP server or installs a dependency.
+#
+# One per mainstream language, because an agent that cannot run the project's own build is not much
+# use on it: a session pointed at a .NET repository that cannot reach nuget.org fails at `dotnet
+# restore`, before it has read a line of the code it was asked about. These are the same class of host
+# as npm and PyPI, which were always here — a public, versioned artifact store — so allowing them
+# changes the size of the bound rather than its shape.
+#
+# Wildcards where the ecosystem splits metadata and artifacts across hosts, which most of them do:
+# crates.io serves the index from index.crates.io and the .crate from static.crates.io, and allowing
+# only the first gets `cargo build` as far as resolving versions and no further.
+#
 # Kept in step with COMMON_DOMAINS in image/init-firewall.sh; tests/egress.bats compares the two.
 # shellcheck disable=SC2034
 EGRESS_COMMON_DOMAINS=(
+    # JavaScript. registry.yarnpkg.com is a separate host, not an alias Yarn resolves to npm's.
     registry.npmjs.org
-    raw.githubusercontent.com
+    registry.yarnpkg.com
+    jsr.io
+
+    # Python. files.pythonhosted.org is where pypi.org's metadata points for the wheel itself.
     pypi.org
     files.pythonhosted.org
+
+    # .NET. api.nuget.org carries both the service index and the flat container packages come from;
+    # globalcdn.nuget.org is what the client is redirected to for the .nupkg.
+    .nuget.org
+
+    # Java, Kotlin, Scala. repo.maven.apache.org is the canonical name and repo1.maven.org the host it
+    # is a CNAME for; clients use both. Gradle fetches plugins and its own distribution from its.
+    repo.maven.apache.org
+    .maven.org
+    .gradle.org
+
+    # Go. The module proxy, the checksum database and the index are three separate names, and a build
+    # that cannot reach sum.golang.org fails verification rather than falling back.
+    .golang.org
+
+    # Rust. Sparse index on index.crates.io, artifacts on static.crates.io, and rustup's toolchains on
+    # static.rust-lang.org — a toolchain a project pins in rust-toolchain.toml is fetched on demand.
+    .crates.io
+    .rust-lang.org
+
+    # Ruby, PHP, Dart, Elixir. Composer resolves most dist URLs to codeload.github.com, which is why
+    # PHP works in practice only with ALLOW_GITHUB on; pub.dev keeps its archives on GCS.
+    .rubygems.org
+    .packagist.org
+    getcomposer.org
+    pub.dev
+    .hex.pm
+    storage.googleapis.com
+
+    raw.githubusercontent.com
 )
 
 # The image registries, and the reason this whole mode exists.

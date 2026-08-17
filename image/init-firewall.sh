@@ -17,11 +17,55 @@ AGENT_ENV_FILE="${DOCKER_CODE_AGENT_ENV:-/etc/docker-code/agent.env}"
 # Hosts every agent needs regardless of vendor: the package registries an agent reaches for when it
 # launches an MCP server or installs a dependency in the workspace. Keep one domain per line — the
 # test suite reads this list straight out of the file.
+#
+# One per mainstream language, because an agent that cannot run the project's own build is not much
+# use on it — a session pointed at a .NET repository that cannot reach nuget.org fails at `dotnet
+# restore`, before it has read any of the code it was asked about.
+#
+# Most ecosystems split metadata from artifacts across two hosts, and naming only the first is the
+# failure that looks like a broken network: `cargo build` resolves versions from index.crates.io and
+# then hangs fetching the .crate from static.crates.io. Both halves are listed for each.
+#
+# lib/egress.sh says the same thing in wildcards, which is the shorter list of the two;
+# tests/egress.bats checks that nothing here is missing there.
 COMMON_DOMAINS=(
     registry.npmjs.org         # npx-launched MCP servers, plugin dependencies
+    registry.yarnpkg.com       # a separate host, not an alias Yarn resolves to npm's
+    jsr.io                     # Deno and the JS registry newer tooling defaults to
     raw.githubusercontent.com  # release notes, raw config fetches
     pypi.org                   # pip, uvx-launched MCP servers
     files.pythonhosted.org     # the payloads behind pypi.org
+
+    api.nuget.org              # .NET: service index and the flat container packages come from
+    globalcdn.nuget.org        # .NET: where the client is redirected for the .nupkg
+    www.nuget.org              # .NET: search and the older v2 endpoints
+
+    repo.maven.apache.org      # Java/Kotlin/Scala: Maven Central, canonical name
+    repo1.maven.org            # Java/Kotlin/Scala: the host the above is a CNAME for
+    plugins.gradle.org         # Gradle: the plugin portal
+    services.gradle.org        # Gradle: the wrapper's own distribution download
+
+    proxy.golang.org           # Go: the module proxy
+    sum.golang.org             # Go: checksum database — a build fails verification without it
+    index.golang.org           # Go: the module index
+
+    crates.io                  # Rust: the API
+    index.crates.io            # Rust: the sparse index
+    static.crates.io           # Rust: the .crate artifacts themselves
+    static.rust-lang.org       # Rust: toolchains a rust-toolchain.toml pins
+
+    rubygems.org               # Ruby: API and the .gem artifacts
+    index.rubygems.org         # Ruby: the compact index Bundler resolves against
+
+    packagist.org              # PHP: Composer. Most dist URLs resolve to codeload.github.com,
+    repo.packagist.org         #   so PHP works in practice only with ALLOW_GITHUB on
+    getcomposer.org            # PHP: Composer's own installer
+
+    pub.dev                    # Dart/Flutter: the API
+    storage.googleapis.com     # Dart/Flutter: where pub.dev keeps the archives
+
+    hex.pm                     # Elixir/Erlang: the API
+    repo.hex.pm                # Elixir/Erlang: the packages
 )
 
 # The registries the inner Docker daemon pulls from. Added only when there is an inner daemon at all,

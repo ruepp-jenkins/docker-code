@@ -133,42 +133,111 @@ progress_preamble() {
     ! printf '%s\n' "${output}" | grep -q 'cloudfront\|cloudflare'
 }
 
-@test "the common domains match the in-container firewall's list" {
-    # Two mechanisms, one promise. A package registry reachable under NET=restricted but not under
-    # NET=gateway is a difference nobody would predict from the names of the modes.
-    block="$(sed -n '/^COMMON_DOMAINS=(/,/^)/p' "${REPO_ROOT}/image/init-firewall.sh")"
-    eval "${block}"
-    run bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_COMMON_DOMAINS[@]}\""
-    [ "${status}" -eq 0 ]
+# gateway_allows <domain> <gateway list, newline separated>
+#
+# Whether squid built from that list would let the domain through: either the entry is there verbatim,
+# or a wildcard in the list covers it.
+#
+# The wildcard half has to be filtered to leading-dot entries before egress_domain_covered sees it.
+# That function documents itself as matching against *wildcards*, and egress_prune_domains only ever
+# hands it those — but it derives its suffix with `${candidate#.}`, so a bare `crates.io` passed in
+# would "cover" `index.crates.io`, which squid does not. Handing it the unfiltered list made an
+# earlier version of these tests pass against an allowlist that had lost its wildcards entirely.
+gateway_allows() {
+    local domain="$1" gateway="$2" wildcards
 
-    for domain in "${COMMON_DOMAINS[@]}"; do
-        printf '%s\n' "${output}" | grep -qxF "${domain}" || {
-            echo "${domain} is in init-firewall.sh's COMMON_DOMAINS but not EGRESS_COMMON_DOMAINS"
+    printf '%s\n' "${gateway}" | grep -qxF "${domain}" && return 0
+
+    wildcards="$(printf '%s\n' "${gateway}" | grep '^\.' || true)"
+    [ -n "${wildcards}" ] || return 1
+
+    bash -c "
+        . '${REPO_ROOT}/lib/egress.sh'
+        egress_domain_covered '${domain}' '${wildcards}'
+    "
+}
+
+# assert_gateway_covers <firewall array name> <gateway array name>
+#
+# Two mechanisms, one promise: a host reachable under NET=restricted but not under NET=gateway is a
+# difference nobody would predict from the names of the modes. The firewall names hosts one at a time
+# because it resolves them into an ipset, while the gateway matches names and can say `.crates.io`, so
+# the check is coverage rather than equality.
+assert_gateway_covers() {
+    local firewall_list="$1" gateway_list="$2" domain gateway
+
+    block="$(sed -n "/^${firewall_list}=(/,/^)/p" "${REPO_ROOT}/image/init-firewall.sh")"
+    [ -n "${block}" ] || { echo "${firewall_list} not found in init-firewall.sh"; return 1; }
+    eval "${block}"
+    eval "set -- \"\${${firewall_list}[@]}\""
+
+    gateway="$(bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${${gateway_list}[@]}\"")"
+    [ -n "${gateway}" ] || { echo "${gateway_list} could not be read"; return 1; }
+
+    for domain in "$@"; do
+        gateway_allows "${domain}" "${gateway}" || {
+            echo "${domain} is allowed under NET=restricted, but nothing in ${gateway_list}"
+            echo "covers it — so the same fetch would be refused under NET=gateway"
             return 1
         }
     done
 }
 
-@test "every registry the in-container firewall names is reachable under the gateway too" {
-    # The same promise the common domains carry, for the registry half: a `docker pull` from ghcr.io
-    # or quay.io that works under NET=restricted but hangs under NET=gateway is a difference nobody
-    # would predict from the names of the modes. The gateway list is wildcards and the firewall list
-    # is hosts, so each host must be either present verbatim or covered by one of those wildcards.
-    block="$(sed -n '/^REGISTRY_DOMAINS=(/,/^)/p' "${REPO_ROOT}/image/init-firewall.sh")"
-    eval "${block}"
-    run bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_REGISTRY_DOMAINS[@]}\""
-    [ "${status}" -eq 0 ]
-    gateway="${output}"
+@test "the common domains match the in-container firewall's list" {
+    assert_gateway_covers COMMON_DOMAINS EGRESS_COMMON_DOMAINS
+}
 
-    for domain in "${REGISTRY_DOMAINS[@]}"; do
-        printf '%s\n' "${gateway}" | grep -qxF "${domain}" && continue
-        run bash -c "
-            . '${REPO_ROOT}/lib/egress.sh'
-            egress_domain_covered '${domain}' '${gateway}' && echo COVERED
-        "
-        [[ "${output}" == *COVERED* ]] || {
-            echo "${domain} is allowed under NET=restricted but nothing in"
-            echo "EGRESS_REGISTRY_DOMAINS covers it, so NET=gateway would refuse the pull"
+@test "every registry the in-container firewall names is reachable under the gateway too" {
+    # The same promise, for the registry half: a `docker pull` from ghcr.io or quay.io that works
+    # under NET=restricted but hangs under NET=gateway.
+    assert_gateway_covers REGISTRY_DOMAINS EGRESS_REGISTRY_DOMAINS
+}
+
+@test "each mainstream language can fetch its dependencies" {
+    # An agent that cannot run the project's own build is not much use on it, and the failure arrives
+    # early and opaquely: `dotnet restore` or `cargo build` times out before the agent has read any of
+    # the code it was asked about. One representative host per ecosystem, checked against the gateway
+    # list because the firewall list is held to it by the test above.
+    gateway="$(bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_COMMON_DOMAINS[@]}\"")"
+
+    for pair in \
+        "JavaScript:registry.npmjs.org" \
+        "Python:pypi.org" \
+        ".NET:api.nuget.org" \
+        "Java:repo.maven.apache.org" \
+        "Go:proxy.golang.org" \
+        "Rust:index.crates.io" \
+        "Ruby:rubygems.org" \
+        "PHP:repo.packagist.org" \
+        "Dart:pub.dev" \
+        "Elixir:repo.hex.pm"
+    do
+        language="${pair%%:*}"
+        domain="${pair##*:}"
+        gateway_allows "${domain}" "${gateway}" || {
+            echo "${language} cannot reach ${domain}, so its dependency install would fail"
+            return 1
+        }
+    done
+}
+
+@test "an ecosystem that splits metadata from artifacts has both halves allowed" {
+    # The failure that reads as a broken network rather than a policy decision: resolution succeeds
+    # against the index and the download then hangs, which is the same shape as the mcr.microsoft.com
+    # blob-endpoint bug in the registry list.
+    gateway="$(bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_COMMON_DOMAINS[@]}\"")"
+
+    # index host -> the artifact host that has to accompany it
+    for pair in \
+        "pypi.org:files.pythonhosted.org" \
+        "index.crates.io:static.crates.io" \
+        "pub.dev:storage.googleapis.com" \
+        "api.nuget.org:globalcdn.nuget.org"
+    do
+        index="${pair%%:*}"
+        artifacts="${pair##*:}"
+        gateway_allows "${artifacts}" "${gateway}" || {
+            echo "${index} is allowed but ${artifacts} is not, so the download would hang"
             return 1
         }
     done
