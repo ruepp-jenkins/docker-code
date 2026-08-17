@@ -112,6 +112,28 @@ mirror_start() {
         running=""
     fi
 
+    # A changed egress setting is reported rather than acted on, unlike the two above. The mirror is
+    # shared across every agent, so recreating it here would cut a session that is mid-pull off from
+    # its cache to change where a *future* pull is routed — the same reasoning as the in-use subnet
+    # above. Whoever wants it applied restarts the mirror between sessions.
+    local want_egress="direct" has_egress now_egress
+    if [ "${egress_mode:-0}" = "1" ]; then
+        case "${DOCKER_CODE_REGISTRY_EGRESS:-1}" in
+            0|false|"") ;;
+            *) want_egress="proxied" ;;
+        esac
+    fi
+    has_egress="$(docker inspect -f "{{index .Config.Labels \"${MIRROR_LABEL}.egress\"}}" \
+        "${MIRROR_CONTAINER}" 2>/dev/null || true)"
+    if [ "${running}" = "true" ] && [ -n "${has_egress}" ]; then
+        now_egress="proxied"
+        [ "${has_egress}" != "direct" ] || now_egress="direct"
+        if [ "${want_egress}" != "${now_egress}" ]; then
+            warn "the registry mirror is already running with '${now_egress}' egress, so the current"
+            warn "DOCKER_CODE_REGISTRY_EGRESS applies once it restarts (docker-code registry stop)"
+        fi
+    fi
+
     case "${running}" in
         true) return 0 ;;
         false)
@@ -131,6 +153,21 @@ mirror_start() {
         --label "${MIRROR_LABEL}.store=${store}"
         --volume "$(prepare_store "${store}"):/var/lib/registry"
         --env "REGISTRY_PROXY_REMOTEURL=${MIRROR_UPSTREAM}")
+
+    # The cache's own fetch from Hub. The gateway in front of a session says nothing about this
+    # container, which sits on the host and pulls on its own account — so under gateway mode it is
+    # pointed at the shared-services gateway unless asked otherwise. Note the difference and do not
+    # oversell it: a session is contained by having no route out, while this is only *pointed* at a
+    # proxy and keeps a normal network, because non-gateway sessions attach to this same network for
+    # their own egress. What it buys is a bound on where the cache fetches from, and a log of it.
+    local mirror_proxy=""
+    if [ "${egress_mode:-0}" = "1" ]; then
+        mirror_proxy="$(egress_service_proxy "${DOCKER_CODE_REGISTRY_EGRESS:-1}")"
+    fi
+    egress_proxy_env "${mirror_proxy}"
+    # shellcheck disable=SC2154  # set by egress_proxy_env in lib/egress.sh, sourced alongside this
+    [ "${#egress_proxy_env_args[@]}" -eq 0 ] || mirror_create+=("${egress_proxy_env_args[@]}")
+    mirror_create+=(--label "${MIRROR_LABEL}.egress=${mirror_proxy:-direct}")
 
     # The registry image runs as root. Against a directory in your home that would leave you with
     # root-owned blobs you cannot delete, so it runs as you instead — but only for a directory: a

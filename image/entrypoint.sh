@@ -248,16 +248,52 @@ start_privileged_dockerd() {
     (
         exec >>"${log_dir}/dockerd.log" 2>&1
         echo "=== dockerd (privileged) started $(date -Is) ==="
+        # Registry pulls read the proxy from the environment; there is no daemon flag for it. Without
+        # this, a gateway-mode session has an inner daemon with no route to any registry at all.
+        if [ -n "${DOCKER_CODE_PROXY:-}" ]; then
+            export HTTP_PROXY="${DOCKER_CODE_PROXY}" HTTPS_PROXY="${DOCKER_CODE_PROXY}"
+            export http_proxy="${DOCKER_CODE_PROXY}" https_proxy="${DOCKER_CODE_PROXY}"
+            export NO_PROXY="localhost,127.0.0.1" no_proxy="localhost,127.0.0.1"
+        fi
         exec dockerd "${dockerd_args[@]}"
     ) &
 
     export DOCKER_HOST="unix:///var/run/docker.sock"
 }
 
+# Nested containers do not inherit the session's proxy environment — the Docker CLI injects it from
+# its own config, so a container the agent starts would otherwise have no route out under
+# DOCKER_CODE_NET=gateway while the agent itself works fine.
+#
+# Under /run rather than in the agent's home for the reason the mirror flag gives above: the home is
+# bind-mounted from the host and a file there would outlive the gateway it names, pointing the next
+# session at a proxy that no longer exists.
+configure_nested_proxy() {
+    [ -n "${DOCKER_CODE_PROXY:-}" ] || return 0
+
+    local dir="/run/docker-code"
+    install -d -m 0755 "${dir}"
+    cat >"${dir}/config.json" <<EOF
+{
+  "proxies": {
+    "default": {
+      "httpProxy": "${DOCKER_CODE_PROXY}",
+      "httpsProxy": "${DOCKER_CODE_PROXY}",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}
+EOF
+    chmod 0644 "${dir}/config.json"
+    export DOCKER_CONFIG="${dir}"
+    log "nested containers are pointed at the egress gateway at ${DOCKER_CODE_PROXY}"
+}
+
 align_user_ids
 seed_home
 seed_defaults
 prepare_runtime_dir
+configure_nested_proxy
 
 if [ "${DOCKER_CODE_DIND:-privileged}" = "privileged" ]; then
     start_privileged_dockerd

@@ -250,7 +250,10 @@ dry() {
     export DOCKER_CODE_NET=sideways
     run "${REPO_ROOT}/bin/claude-docker"
     [ "${status}" -ne 0 ]
-    [[ "${output}" == *"full, restricted, none"* ]]
+    # Every mode is named, so the message stays a usable answer rather than a partial one.
+    for mode in full restricted gateway none; do
+        [[ "${output}" == *"${mode}"* ]] || { echo "the refusal does not mention ${mode}"; return 1; }
+    done
 }
 
 @test "an unknown dind mode is refused" {

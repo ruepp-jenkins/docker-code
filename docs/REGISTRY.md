@@ -64,6 +64,7 @@ export DOCKER_CODE_REGISTRY_MIRROR=1
 | `DOCKER_CODE_REGISTRY_HOME` | `~/docker-code/registry/data` | where the blobs are |
 | `DOCKER_CODE_REGISTRY_SUBNET` | `172.30.30.0/24` | empty leaves the choice to Docker |
 | `DOCKER_CODE_REGISTRY_USERNAME` / `_PASSWORD` | — | Docker Hub account used to raise the rate limit |
+| `DOCKER_CODE_REGISTRY_EGRESS` | `1` | under `NET=gateway` only: `1` routes the cache's own Hub fetch through the shared-services gateway, `0` goes direct, or give a proxy URL ([EGRESS.md](EGRESS.md)) |
 
 ```bash
 docker-code registry start|stop|status

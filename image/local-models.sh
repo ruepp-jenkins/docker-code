@@ -15,6 +15,22 @@ BRIDGE="${DOCKER_CODE_LOCAL_BRIDGE:-}"
 LOG_DIR="/home/agent/.docker-code"
 LOG="${LOG_DIR}/local-models.log"
 
+# Under DOCKER_CODE_NET=gateway the container is on an internal network and has no route to the model
+# services at all — the egress gateway is the only way out, so the forward has to be tunnelled through
+# it with an HTTP CONNECT rather than opened directly. socat speaks that natively, which is the reason
+# this works without another package.
+PROXY="${DOCKER_CODE_PROXY:-}"
+PROXY_HOST=""
+PROXY_PORT=""
+if [ -n "${PROXY}" ]; then
+    proxy_hostport="${PROXY#*://}"
+    PROXY_HOST="${proxy_hostport%%:*}"
+    PROXY_PORT="${proxy_hostport##*:}"
+    case "${PROXY_PORT}" in
+        ''|*[!0-9]*) PROXY_PORT=3128 ;;
+    esac
+fi
+
 [ -n "${BRIDGE}" ] || exit 0
 
 mkdir -p "${LOG_DIR}"
@@ -45,12 +61,22 @@ for spec in ${BRIDGE}; do
 
     # Bound to loopback only. The forward exists for the tools in this container; publishing it on
     # the container's other interfaces would hand it to anything else on the model network.
-    (
-        exec >>"${LOG}" 2>&1
-        echo "--- forwarding 127.0.0.1:${local_port} -> ${remote_host}:${remote_port}"
-        exec socat "TCP4-LISTEN:${local_port},bind=127.0.0.1,fork,reuseaddr" \
-                   "TCP4:${remote_host}:${remote_port}"
-    ) &
+    if [ -n "${PROXY_HOST}" ]; then
+        (
+            exec >>"${LOG}" 2>&1
+            echo "--- forwarding 127.0.0.1:${local_port} -> ${remote_host}:${remote_port}" \
+                 "via ${PROXY_HOST}:${PROXY_PORT}"
+            exec socat "TCP4-LISTEN:${local_port},bind=127.0.0.1,fork,reuseaddr" \
+                       "PROXY:${PROXY_HOST}:${remote_host}:${remote_port},proxyport=${PROXY_PORT}"
+        ) &
+    else
+        (
+            exec >>"${LOG}" 2>&1
+            echo "--- forwarding 127.0.0.1:${local_port} -> ${remote_host}:${remote_port}"
+            exec socat "TCP4-LISTEN:${local_port},bind=127.0.0.1,fork,reuseaddr" \
+                       "TCP4:${remote_host}:${remote_port}"
+        ) &
+    fi
 done
 
 exit 0
