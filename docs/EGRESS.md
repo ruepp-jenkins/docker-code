@@ -86,8 +86,8 @@ written once and left to you. This file *is* the policy; a stale copy is a wrong
 | source | contents |
 |---|---|
 | `AGENT_DOMAINS` from `agents/<id>/agent.env` | the agent's own vendor, verbatim |
-| built in | the language package registries — see below |
-| built in, when there is an inner Docker | the image registries — see below |
+| built in | the language package registries and source forges — see below |
+| built in, when there is an inner Docker | the image registries and OS package archives — see below |
 | `DOCKER_CODE_ALLOW_GITHUB=1` (the default) | `.github.com`, `.githubusercontent.com` |
 | `DOCKER_CODE_ALLOW_DOMAINS` | yours, verbatim — names or CIDRs |
 
@@ -109,7 +109,13 @@ at `dotnet restore` before it has read any of the code it was asked about.
 | PHP | `.packagist.org`, `getcomposer.org` |
 | Dart, Flutter | `pub.dev` + `storage.googleapis.com` |
 | Elixir, Erlang | `.hex.pm` |
+| source forges | `gitlab.com`, `bitbucket.org`, `api.bitbucket.org` |
 | — | `raw.githubusercontent.com` |
+
+The two forges are here rather than gated behind a knob because they are a dependency source and not
+only somewhere to clone from: a Go module outside the proxy is fetched straight from its host, and
+Composer resolves most `dist` URLs to a forge. GitHub is the third and arrives separately, since
+`DOCKER_CODE_ALLOW_GITHUB` can turn it off.
 
 Most of these are two hosts, not one, because the ecosystem splits metadata from artifacts: `cargo`
 resolves versions against `index.crates.io` and then fetches the `.crate` from `static.crates.io`.
@@ -149,6 +155,23 @@ decision.
 
 This applies whether or not the [pull-through cache](REGISTRY.md) is running: `--registry-mirror`
 proxies Docker Hub and nothing else, so every other registry here is fetched from directly either way.
+
+### The OS package archives
+
+Also gated on the inner Docker daemon, and for the same reason there is nothing here for a session
+without one: the agent's own container has no `sudo`, so it could not install a system package
+anyway. These exist for `docker build`, which is most of what the inner daemon is for and which fails
+on almost any real Dockerfile without them — the base image pulls, and then `RUN apt-get update`
+cannot reach a mirror.
+
+| distribution | allowed |
+|---|---|
+| Ubuntu | `.ubuntu.com` — the archive, `security`, and `ports` for everything that is not amd64 |
+| Debian | `.debian.org` — including `security.debian.org`, without which an image builds unpatched |
+| Alpine | `.alpinelinux.org` |
+
+The Ubuntu wildcard is doing real work: base images are commonly configured against a regional or
+cloud mirror (`us.archive`, `azure.archive`), and naming only `archive.ubuntu.com` would break those.
 
 Two registries need a word of warning. `registry.k8s.io` chooses a backend by client geography, and
 its AWS side signs a per-region S3 bucket that cannot be named in advance; the same is true of

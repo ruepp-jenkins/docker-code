@@ -95,7 +95,38 @@ EGRESS_COMMON_DOMAINS=(
     .hex.pm
     storage.googleapis.com
 
+    # The other two source forges. Not only for `git clone`: a Go module outside the proxy is fetched
+    # straight from its host, and Composer resolves most dist URLs to a forge, so these are as much a
+    # dependency source as the registries above. GitHub is the third and arrives separately, because
+    # DOCKER_CODE_ALLOW_GITHUB can turn it off.
+    gitlab.com
+    bitbucket.org
+    api.bitbucket.org
+
     raw.githubusercontent.com
+)
+
+# What a Dockerfile needs to get past its first RUN line.
+#
+# Added only when there is an inner daemon, exactly like the image registries, and for the same
+# reason: without one there is nothing here that could install a package. The agent's own container
+# has no sudo, so this is never about apt inside the session — it is about `docker build`, which is
+# most of why the inner daemon exists and which fails on almost any real Dockerfile without these.
+# The base image resolves, the pull succeeds, and then `RUN apt-get update` cannot reach a mirror.
+#
+# Kept in step with OS_PACKAGE_DOMAINS in image/init-firewall.sh; tests/egress.bats compares the two.
+# shellcheck disable=SC2034
+EGRESS_OS_PACKAGE_DOMAINS=(
+    # Canonical. The wildcard carries the regional and cloud mirrors a base image is likely to be
+    # configured for — us.archive, de.archive, azure.archive — and ports.ubuntu.com, which is where
+    # everything that is not amd64 gets its packages.
+    .ubuntu.com
+
+    # Debian, including security.debian.org: an image that skips it builds without its patches.
+    .debian.org
+
+    # Alpine, whose dl-cdn host is what `apk add` reads.
+    .alpinelinux.org
 )
 
 # The image registries, and the reason this whole mode exists.

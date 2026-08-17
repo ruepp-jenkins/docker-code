@@ -728,11 +728,11 @@ session_egress() {
     # shellcheck disable=SC2206  # a space-separated list from agent.env is the documented format
     domains=(${AGENT_DOMAINS} "${EGRESS_COMMON_DOMAINS[@]}")
 
-    # Only when there is an inner daemon to pull images, matching how init-firewall.sh scopes the
-    # same list.
+    # Only when there is an inner daemon to pull images and build them, matching how
+    # init-firewall.sh scopes the same two lists.
     case "${DIND_MODE}" in
         0|false|none) ;;
-        *) domains+=("${EGRESS_REGISTRY_DOMAINS[@]}") ;;
+        *) domains+=("${EGRESS_REGISTRY_DOMAINS[@]}" "${EGRESS_OS_PACKAGE_DOMAINS[@]}") ;;
     esac
 
     [ "$(agent_knob ALLOW_GITHUB 1)" = "1" ] && domains+=("${EGRESS_GITHUB_DOMAINS[@]}")

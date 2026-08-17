@@ -193,6 +193,67 @@ assert_gateway_covers() {
     assert_gateway_covers REGISTRY_DOMAINS EGRESS_REGISTRY_DOMAINS
 }
 
+@test "every OS package archive the firewall names is reachable under the gateway too" {
+    assert_gateway_covers OS_PACKAGE_DOMAINS EGRESS_OS_PACKAGE_DOMAINS
+}
+
+@test "a Dockerfile can get past its first RUN line" {
+    # `docker build` is most of why the inner daemon exists, and almost every real Dockerfile starts
+    # by installing packages. Without these the base image pulls and then `apt-get update` cannot
+    # reach a mirror — which looks like a broken build rather than an egress policy.
+    gateway="$(bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_OS_PACKAGE_DOMAINS[@]}\"")"
+
+    for pair in \
+        "Ubuntu:archive.ubuntu.com" \
+        "Ubuntu security:security.ubuntu.com" \
+        "Ubuntu on arm64:ports.ubuntu.com" \
+        "Debian:deb.debian.org" \
+        "Debian security:security.debian.org" \
+        "Alpine:dl-cdn.alpinelinux.org"
+    do
+        distro="${pair%%:*}"
+        domain="${pair##*:}"
+        gateway_allows "${domain}" "${gateway}" || {
+            echo "${distro} cannot reach ${domain}, so a build installing packages would fail"
+            return 1
+        }
+    done
+}
+
+@test "the OS package archives are added only when there is an inner Docker" {
+    # Nothing in a session without a daemon could install a system package — there is no sudo — so a
+    # non-dind session keeps the smaller allowlist, exactly as the image registries do.
+    grep -q 'OS_PACKAGE_DOMAINS' "${REPO_ROOT}/image/init-firewall.sh"
+    block="$(sed -n '/^case "\${DOCKER_CODE_DIND:-0}" in/,/^esac/p' "${REPO_ROOT}/image/init-firewall.sh")"
+    [ -n "${block}" ]
+    [[ "${block}" == *"OS_PACKAGE_DOMAINS"* ]] || {
+        echo "init-firewall.sh resolves the OS package archives outside the inner-Docker gate"
+        return 1
+    }
+
+    # And the same gate on the host side, which is a different file and a different mechanism.
+    block="$(sed -n '/^session_egress()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [[ "${block}" == *"EGRESS_OS_PACKAGE_DOMAINS"* ]]
+    dind="$(printf '%s\n' "${block}" | sed -n '/case "${DIND_MODE}" in/,/esac/p')"
+    [[ "${dind}" == *"EGRESS_OS_PACKAGE_DOMAINS"* ]] || {
+        echo "session_egress adds the OS package archives outside the DIND_MODE gate"
+        return 1
+    }
+}
+
+@test "the forges whose registries are allowed can also be cloned from" {
+    # registry.gitlab.com without gitlab.com is the asymmetry this catches: images pullable, repos
+    # not. Always on rather than gated, because a Go module outside the proxy and most Composer dist
+    # URLs are fetched from the forge during an ordinary dependency install.
+    gateway="$(bash -c ". '${REPO_ROOT}/lib/egress.sh'; printf '%s\n' \"\${EGRESS_COMMON_DOMAINS[@]}\"")"
+    for domain in gitlab.com bitbucket.org; do
+        gateway_allows "${domain}" "${gateway}" || {
+            echo "${domain} cannot be reached, so a clone from it would fail"
+            return 1
+        }
+    done
+}
+
 @test "each mainstream language can fetch its dependencies" {
     # An agent that cannot run the project's own build is not much use on it, and the failure arrives
     # early and opaquely: `dotnet restore` or `cargo build` times out before the agent has read any of

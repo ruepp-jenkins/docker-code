@@ -66,6 +66,27 @@ COMMON_DOMAINS=(
 
     hex.pm                     # Elixir/Erlang: the API
     repo.hex.pm                # Elixir/Erlang: the packages
+
+    gitlab.com                 # the other two source forges — not only for `git clone`, but because
+    bitbucket.org              #   a Go module outside the proxy and most Composer dist URLs are
+    api.bitbucket.org          #   fetched straight from the forge. GitHub arrives separately.
+)
+
+# What a Dockerfile needs to get past its first RUN line. Added only when there is an inner daemon,
+# exactly like the image registries below.
+#
+# Never about apt inside the session — the agent's container has no sudo — but about `docker build`,
+# which is most of why the inner daemon exists. Without these, the base image pulls and then
+# `RUN apt-get update` cannot reach a mirror, which is where almost every real Dockerfile stops.
+#
+# lib/egress.sh says the same in wildcards; tests/egress.bats checks nothing here is missing there.
+OS_PACKAGE_DOMAINS=(
+    archive.ubuntu.com         # Ubuntu: the package archive
+    security.ubuntu.com        # Ubuntu: security updates, a separate host from the archive
+    ports.ubuntu.com           # Ubuntu: where everything that is not amd64 gets its packages
+    deb.debian.org             # Debian: the CDN in front of the mirrors
+    security.debian.org        # Debian: an image that skips this builds without its patches
+    dl-cdn.alpinelinux.org     # Alpine: what `apk add` reads
 )
 
 # The registries the inner Docker daemon pulls from. Added only when there is an inner daemon at all,
@@ -242,8 +263,8 @@ case "${DOCKER_CODE_DIND:-0}" in
     0|false|none)
         ;;
     *)
-        log "inner Docker is on, so the image registries are allowed as well"
-        for domain in "${REGISTRY_DOMAINS[@]}"; do
+        log "inner Docker is on, so the image registries and OS package archives are allowed as well"
+        for domain in "${REGISTRY_DOMAINS[@]}" "${OS_PACKAGE_DOMAINS[@]}"; do
             resolve_into_set "${domain}" || true
         done
         ;;
