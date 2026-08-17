@@ -349,8 +349,17 @@ egress_start() {
     # not a cache — and a session already attached keeps its network either way.
     listed="$(docker ps -aq --filter "name=^${container}$" 2>/dev/null || true)"
     if [ -n "${listed}" ]; then
-        docker rm -f "${container}" >/dev/null 2>&1 || true
+        egress_remove "${container}"
     fi
+
+    ensure_image "${EGRESS_IMAGE}" "the ${id} egress gateway" || return 1
+
+    # The size of the allowlist, said out loud. A gateway that came up around an allowlist of two
+    # entries because AGENT_DOMAINS was empty looks exactly like a healthy one until something is
+    # refused, and this is the cheapest place to notice.
+    local allowed
+    allowed="$(awk '/^acl allowed_domains dstdomain/{print NF-3; exit}' "${conf}" 2>/dev/null || true)"
+    say "starting the egress gateway for ${id} (${allowed:-0} domains allowed)"
 
     egress_create=(docker run --detach --rm
         --name "${container}"
@@ -374,17 +383,21 @@ egress_start() {
         return 1
     }
 
-    egress_wait_ready "${container}"
+    egress_wait_ready "${container}" "waiting for the ${id} egress gateway to accept connections"
 }
 
 # squid parses its config, binds, and only then serves. A session that starts talking in between
 # gets a connection refused that looks like a broken allowlist, so wait for the port rather than
 # hand that race to every agent.
 egress_wait_ready() {
-    local container="$1" waited=0
+    local container="$1" label="$2" tries=0 interval elapsed=0
 
-    while [ "${waited}" -lt 30 ]; do
+    # Roughly 30 seconds in total, but not sampled evenly: squid usually binds within a second or two,
+    # and polling once a second would charge every single session a full second it did not need. Eight
+    # quick looks cover the normal case, then it backs off so a genuine failure does not spin.
+    while [ "${tries}" -lt 36 ]; do
         [ "$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null || true)" = "true" ] || {
+            progress_done
             warn "the egress gateway exited during startup; its log follows"
             docker logs --tail 15 "${container}" >&2 2>&1 || true
             return 1
@@ -392,15 +405,27 @@ egress_wait_ready() {
         if docker exec "${container}" sh -c \
             "grep -q 'Accepting HTTP Socket connections' /var/log/squid/cache.log 2>/dev/null" \
             >/dev/null 2>&1; then
+            progress_done
             return 0
         fi
-        sleep 1
-        waited=$((waited + 1))
+
+        if [ "${tries}" -lt 8 ]; then
+            interval=0.25
+            elapsed=$(( tries / 4 ))
+        else
+            interval=1
+            elapsed=$(( tries - 6 ))
+        fi
+
+        progress_tick "${label}" "${tries}" "${elapsed}"
+        sleep "${interval}"
+        tries=$((tries + 1))
     done
 
     # Running but never announced itself. Let the session proceed — the port is usually up by the
     # time the agent's first request happens — but say so, because if it is not, the symptom is a
     # connection refused rather than a policy decision.
+    progress_done
     warn "the egress gateway did not report readiness within 30s; continuing"
     return 0
 }
@@ -422,13 +447,26 @@ egress_stop() {
     fi
     [ -z "${remaining}" ] || return 0
 
-    docker stop "${container}" >/dev/null 2>&1 || true
-    docker rm "${container}" >/dev/null 2>&1 || true
+    egress_remove "${container}"
 
     # The network goes too, so a changed allowlist never inherits a stale one, and an agent that is
     # not running leaves nothing behind. It refuses while anything is attached, which is the correct
     # answer and needs no handling.
     docker network rm "$(egress_network "${id}")" >/dev/null 2>&1 || true
+}
+
+# Removed outright rather than stopped first, which is the opposite of what lib/mirror.sh does.
+#
+# `docker stop` is worth its grace period only when the process uses it. squid's image runs a bash
+# entrypoint that never execs, so SIGTERM is delivered to bash and never reaches squid: the daemon
+# waits out the full ten seconds and SIGKILLs regardless. Measured 10.2s against 0.26s for a forced
+# removal, twice over once the services gateway is up — which was the whole of the twenty-second pause
+# after closing an agent.
+#
+# Nothing is lost by it. The gateway is a filter and not a cache, its allowlist is a bind-mounted file
+# on the host, and its log is per session.
+egress_remove() {
+    docker rm -f "$1" >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -464,8 +502,7 @@ egress_services_stop() {
     fi
     [ -z "${remaining}" ] || return 0
 
-    docker stop "${container}" >/dev/null 2>&1 || true
-    docker rm "${container}" >/dev/null 2>&1 || true
+    egress_remove "${container}"
 }
 
 # egress_proxy_env <url>

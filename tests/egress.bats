@@ -48,6 +48,16 @@ dry() {
     }
 }
 
+# The progress helpers live in bin/docker-code, which cannot be sourced — it dispatches at the end —
+# so they are lifted out of it by name.
+progress_preamble() {
+    printf 'SELF_NAME=docker-code\n'
+    grep '^PROGRESS_FRAMES=' "${REPO_ROOT}/bin/docker-code"
+    sed -n '/^progress_tick()/,/^}/p' "${REPO_ROOT}/bin/docker-code"
+    sed -n '/^progress_done()/,/^}/p' "${REPO_ROOT}/bin/docker-code"
+    sed -n '/^with_progress()/,/^}/p' "${REPO_ROOT}/bin/docker-code"
+}
+
 # ---------------------------------------------------------------------------------------------
 # The allowlist
 # ---------------------------------------------------------------------------------------------
@@ -367,6 +377,10 @@ EOF
 @test "a service egress of 0 means no proxy, and a URL is used as given" {
     run bash -c "
         warn() { :; }
+        say() { :; }
+        ensure_image() { :; }
+        progress_tick() { :; }
+        progress_done() { :; }
         die() { exit 1; }
         . '${REPO_ROOT}/lib/egress.sh'
         printf '[%s]\n' \"\$(egress_service_proxy 0)\"
@@ -389,4 +403,154 @@ EOF
     # They keep a network with a route out, because non-gateway sessions attach to it for their own
     # egress, so pointing them at a proxy is advisory. The docs must not read as containment.
     grep -qi 'advisory' "${REPO_ROOT}/docs/EGRESS.md"
+}
+
+# ---------------------------------------------------------------------------------------------
+# Start and teardown cost
+# ---------------------------------------------------------------------------------------------
+
+@test "closing a session removes the gateway outright instead of waiting on docker stop" {
+    # ubuntu/squid's entrypoint is a bash script that never execs, so SIGTERM is delivered to bash and
+    # squid never sees it: `docker stop` waits out its full ten-second grace period and SIGKILLs
+    # anyway. Measured 10.2s against 0.26s for a forced removal, twice over once the services gateway
+    # is up — which was the whole of the twenty-second pause after closing an agent.
+    make_stub docker
+    run bash -c "
+        warn() { :; }
+        say() { :; }
+        ensure_image() { :; }
+        progress_tick() { :; }
+        progress_done() { :; }
+        die() { exit 1; }
+        container_name=''
+        . '${REPO_ROOT}/lib/egress.sh'
+        egress_stop codex
+    "
+    [ "${status}" -eq 0 ]
+
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"rm -f docker-code-egress-codex"* ]]
+    [[ "${calls}" != *"stop docker-code-egress-codex"* ]] || {
+        echo "the gateway is being stopped gracefully, which costs ten seconds for nothing:"
+        printf '%s\n' "${calls}"
+        return 1
+    }
+}
+
+@test "the services gateway is torn down the same way, since it doubled the wait" {
+    make_stub docker
+    run bash -c "
+        warn() { :; }
+        say() { :; }
+        ensure_image() { :; }
+        progress_tick() { :; }
+        progress_done() { :; }
+        die() { exit 1; }
+        container_name=''
+        . '${REPO_ROOT}/lib/egress.sh'
+        egress_services_stop
+    "
+    [ "${status}" -eq 0 ]
+    [[ "$(stub_calls docker)" != *"stop docker-code-egress-services"* ]]
+}
+
+@test "the gateway image is pulled where the progress can be seen" {
+    # egress_start sends docker run's output to /dev/null, which would swallow an implicit pull with
+    # it and leave a first start looking like a hang.
+    block="$(sed -n '/^egress_start()/,/^}/p' "${REPO_ROOT}/lib/egress.sh")"
+    [ -n "${block}" ]
+    [[ "${block}" == *"ensure_image"* ]]
+
+    # And the pull has to come before the run, or it is not what the user is waiting on.
+    pull_line="$(printf '%s\n' "${block}" | grep -n 'ensure_image' | head -n 1 | cut -d: -f1)"
+    run_line="$(printf '%s\n' "${block}" | grep -n 'egress_create=' | head -n 1 | cut -d: -f1)"
+    [ -n "${pull_line}" ] && [ -n "${run_line}" ]
+    [ "${pull_line}" -lt "${run_line}" ]
+}
+
+@test "starting a gateway announces itself" {
+    block="$(sed -n '/^egress_start()/,/^}/p' "${REPO_ROOT}/lib/egress.sh")"
+    [[ "${block}" == *"say "* ]]
+}
+
+@test "the spinner writes nothing at all when stderr is not a terminal" {
+    # Piped into a file, a CI log or this suite's own capture, carriage returns and escape codes are
+    # noise that ends up committed in build output.
+    run bash -c "
+        SELF_NAME=docker-code
+        $(grep '^PROGRESS_FRAMES=' "${REPO_ROOT}/bin/docker-code")
+        $(sed -n '/^progress_tick()/,/^}/p' "${REPO_ROOT}/bin/docker-code")
+        $(sed -n '/^progress_done()/,/^}/p' "${REPO_ROOT}/bin/docker-code")
+        progress_tick 'waiting for something' 2 7
+        progress_done
+    "
+    [ "${status}" -eq 0 ]
+    [ -z "${output}" ] || {
+        echo "the spinner emitted output with no tty: ${output}"
+        return 1
+    }
+}
+
+@test "every way out of the wait clears the spinner line" {
+    # Three exits — the container died, it became ready, the budget ran out — and a line left
+    # half-drawn on any of them sits above whatever the agent prints next.
+    block="$(sed -n '/^egress_wait_ready()/,/^}/p' "${REPO_ROOT}/lib/egress.sh")"
+    [ -n "${block}" ]
+    [[ "${block}" == *"progress_tick"* ]]
+    [ "$(printf '%s\n' "${block}" | grep -c 'progress_done')" -ge 3 ]
+}
+
+@test "the allowlist size is stated, so an empty one is visible before something is refused" {
+    # A gateway built around two entries because AGENT_DOMAINS was empty looks exactly like a healthy
+    # one until a request is denied.
+    block="$(sed -n '/^egress_start()/,/^}/p' "${REPO_ROOT}/lib/egress.sh")"
+    [[ "${block}" == *"domains allowed"* ]]
+}
+
+@test "a teardown step that finishes quickly says nothing at all" {
+    # Closing an agent should hand the shell straight back. Narrating three steps that each take a
+    # fifth of a second would put noise in front of the case nobody is waiting on.
+    run bash -c "$(progress_preamble)
+        with_progress 'stopping the registry mirror' true"
+    [ "${status}" -eq 0 ]
+    [ -z "${output}" ] || {
+        echo "a fast teardown step printed: ${output}"
+        return 1
+    }
+}
+
+@test "with_progress returns what the command returned" {
+    # The work runs as a background child that is waited on, so a teardown that failed is still a
+    # failure rather than something the spinner swallowed.
+    run bash -c "$(progress_preamble)
+        with_progress 'failing step' bash -c 'exit 7'"
+    [ "${status}" -eq 7 ]
+}
+
+@test "with_progress leaves no process behind" {
+    # A spinner that is itself backgrounded has to be killed on every path out, including the
+    # interrupted ones, and one that outlives its parent spins on a terminal nobody owns.
+    run bash -c "$(progress_preamble)
+        with_progress 'a step' sleep 0.1
+        jobs -p | grep -q . && echo LEFTOVER
+        echo CLEAN"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *CLEAN* ]]
+    [[ "${output}" != *LEFTOVER* ]]
+}
+
+@test "every teardown step names what it is doing" {
+    block="$(sed -n '/^session_cleanup()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [ -n "${block}" ]
+    [[ "${block}" == *"stopping the registry mirror"* ]]
+    [[ "${block}" == *"egress gateway"* ]]
+
+    # And no step is called bare, which would be one that stays silent however long it takes.
+    for call in 'mirror_stop' 'egress_stop' 'egress_services_stop'; do
+        printf '%s\n' "${block}" | grep -E "^[[:space:]]*${call}\b" && {
+            echo "${call} is called without with_progress, so a slow one would look like a hang"
+            return 1
+        }
+    done
+    return 0
 }

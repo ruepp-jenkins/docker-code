@@ -186,6 +186,9 @@ mirror_start() {
 
     mirror_create+=("${MIRROR_IMAGE}")
 
+    ensure_image "${MIRROR_IMAGE}" "the registry mirror" || return 1
+    say "starting the registry mirror"
+
     "${mirror_create[@]}" >/dev/null 2>&1 && return 0
 
     # Losing a race against another session that created it first is not a failure.

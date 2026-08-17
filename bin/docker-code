@@ -24,6 +24,100 @@ SELF_NAME="$(basename "$0")"
 warn() { echo "${SELF_NAME}: $*" >&2; }
 die() { echo "${SELF_NAME}: ERROR: $*" >&2; exit 1; }
 
+# Progress, not a problem. Same shape as warn deliberately — one prefix for everything this command
+# says — but a separate name so that "starting Ollama" is not written with the word warn next to it.
+#
+# stderr, like the others: stdout belongs to DOCKER_CODE_DRY_RUN, which prints a command meant to be
+# piped somewhere.
+say() { echo "${SELF_NAME}: $*" >&2; }
+
+# A spinner for the waits that would otherwise look like a hang.
+#
+# Drawn from inside the caller's own polling loop rather than from a background process. A background
+# spinner has to be killed on every exit path including the interrupted ones, and one that outlives
+# its parent leaves a cursor spinning on a terminal nobody owns any more.
+#
+# Only on a terminal: piped into a file, a CI log or the test suite's capture, the frames and the
+# carriage returns are noise. `[ -t 2 ]` because everything this command says goes to stderr.
+# Plain ASCII rather than the braille spinners, because ${var:i:1} indexes bytes outside a UTF-8
+# locale and half a multibyte frame is worse than no animation at all.
+# shellcheck disable=SC1003  # the backslash is the fourth frame, not an escape
+PROGRESS_FRAMES='|/-\'
+
+# progress_tick <label> <tick> <elapsed-seconds>
+progress_tick() {
+    [ -t 2 ] || return 0
+    # \033[K clears from the cursor to the end of the line, so a shorter frame never leaves the tail
+    # of a longer one behind.
+    printf '\r%s: %s %s (%ss)\033[K' \
+        "${SELF_NAME}" "$1" "${PROGRESS_FRAMES:$(( $2 % 4 )):1}" "$3" >&2
+}
+
+progress_done() {
+    [ -t 2 ] || return 0
+    printf '\r\033[K' >&2
+}
+
+# with_progress <label> <command...>
+#
+# Runs the command and, only once it has taken long enough to be worth mentioning, says what is being
+# waited on and spins until it finishes. The delay is the whole point: teardown is normally under a
+# second, and narrating every step on every exit would be noise in front of the case nobody is
+# waiting on. Half a second of silence first, then the label.
+#
+# The command runs as a background child that is waited on here, so its exit status is still the
+# return value and there is no process left over — unlike a spinner that is itself backgrounded and
+# has to be killed on every path out.
+#
+# Output is swallowed because the spinner owns the line while it is drawing; a warning printed into
+# a carriage return leaves both unreadable. These are teardown paths, where the docker calls already
+# discard their own output.
+with_progress() {
+    local label="$1"
+    shift
+
+    local pid tries=0 status=0 shown=0
+
+    "$@" >/dev/null 2>&1 &
+    pid=$!
+
+    while kill -0 "${pid}" 2>/dev/null; do
+        if [ "${tries}" -ge 2 ]; then
+            progress_tick "${label}" "${tries}" "$(( tries / 4 ))"
+            shown=1
+        fi
+        sleep 0.25
+        tries=$((tries + 1))
+    done
+
+    wait "${pid}" || status=$?
+    [ "${shown}" = "0" ] || progress_done
+    return "${status}"
+}
+
+# Pull before running, so a first start says what it is waiting for.
+#
+# `docker run` would pull implicitly, but every service start in lib/*.sh sends its output to
+# /dev/null to keep a lost name race quiet — and that swallows the pull progress with it. The result
+# is a session that sits silent for however long a multi-GB download takes, with nothing on screen to
+# say it is doing anything at all. Pulling separately keeps both properties: progress is visible here,
+# and the run itself stays quiet.
+ensure_image() {
+    local image="$1" what="${2:-}"
+
+    docker image inspect "${image}" >/dev/null 2>&1 && return 0
+
+    say "pulling ${image}${what:+ for ${what}} — one-off, and can take a few minutes"
+
+    # To stderr, so a dry run's stdout stays exactly the command it promises and `models up` can still
+    # be piped. Docker keeps its progress bars either way: it decides on that by asking whether the
+    # stream is a terminal, which stderr is here.
+    docker pull "${image}" >&2 || {
+        warn "could not pull ${image}"
+        return 1
+    }
+}
+
 # ---------------------------------------------------------------------------------------------
 # Find our own installation
 #
@@ -441,10 +535,16 @@ taken_names() {
 # unconditionally is correct.
 # shellcheck disable=SC2317  # reached through the trap installed before the run, not by a call
 session_cleanup() {
-    [ "${manage_mirror}" = "1" ] && mirror_stop
+    # Each step names itself, but only if it takes long enough to notice — see with_progress. On a
+    # healthy daemon the whole of this is under a second and says nothing at all, which is the
+    # behaviour worth having when you have just closed an agent and want your shell back.
+    if [ "${manage_mirror}" = "1" ]; then
+        with_progress "stopping the registry mirror" mirror_stop
+    fi
+
     if [ "${manage_egress}" = "1" ]; then
-        egress_stop "${AGENT_ID}"
-        egress_services_stop
+        with_progress "removing the ${AGENT_ID} egress gateway" egress_stop "${AGENT_ID}"
+        with_progress "removing the shared-services gateway" egress_services_stop
     fi
     return 0
 }

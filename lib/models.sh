@@ -235,6 +235,11 @@ models_start_ollama() {
 
     models_ollama_create+=("${image}")
 
+    # Ollama is the largest image in the project — several GB, and the ROCm build considerably more —
+    # so this is the pull that makes a first start look like a hang.
+    ensure_image "${image}" "Ollama" || return 1
+    say "starting Ollama"
+
     # Docker's own message, not a swallowed exit code. The failure people actually hit here is
     # asking for a GPU the host cannot provide —
     #   failed to discover GPU vendor from CDI: no known GPU vendor found
@@ -283,6 +288,9 @@ models_start_litellm() {
 
     models_litellm_create+=("${LITELLM_IMAGE}"
         --config /app/config/config.yaml --port "${LITELLM_PORT}")
+
+    ensure_image "${LITELLM_IMAGE}" "the LiteLLM gateway" || return 1
+    say "starting the LiteLLM gateway"
 
     "${models_litellm_create[@]}" >/dev/null 2>&1 && return 0
     models_container_running "${LITELLM_CONTAINER}"

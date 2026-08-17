@@ -22,6 +22,8 @@ models_sh() {
         warn() { echo "warn: $*" >&2; }
         die() { echo "die: $*" >&2; exit 1; }
         prepare_store() { case "$1" in /*) mkdir -p "$1";; esac; printf "%s\n" "$1"; }
+        say() { echo "say: $*" >&2; }
+        ensure_image() { echo "ensure_image: $1" >&2; }
         . "'"${REPO_ROOT}"'/lib/models.sh"
         '"$*"
 }
@@ -451,4 +453,48 @@ esac'
     [[ "${output}" == *"ollama"* ]]
     [[ "${output}" == *"litellm"* ]]
     [[ "$(stub_calls docker)" != *"rm -f"* ]]
+}
+
+@test "a missing image is pulled where its progress can be seen" {
+    # Every start here sends docker run's output to /dev/null so that losing a name race stays quiet.
+    # That also swallows the implicit pull, and Ollama is the largest image in the project — so a
+    # first start looked like a hang for however long several GB take, with nothing on screen.
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_up'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"ensure_image: ollama/ollama:latest"* ]]
+    [[ "${output}" == *"ensure_image: ghcr.io/berriai/litellm:main-stable"* ]]
+}
+
+@test "each service says what it is starting rather than sitting silent" {
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_up'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"starting Ollama"* ]]
+    [[ "${output}" == *"starting the LiteLLM gateway"* ]]
+}
+
+@test "an already-present image is not pulled again" {
+    # ensure_image checks first; a pull on every start would add a registry round trip to a session
+    # that needs nothing.
+    run bash -c '
+        docker() { echo "docker $*" >&2; return 0; }
+        say() { echo "say: $*" >&2; }
+        warn() { :; }
+        ensure_image() {
+            docker image inspect "$1" >/dev/null 2>&1 && return 0
+            say "pulling $1"
+            docker pull "$1" >&2
+        }
+        ensure_image already/there:1
+    '
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *"pulling"* ]]
+    [[ "${output}" != *"docker pull"* ]]
 }
