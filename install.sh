@@ -233,7 +233,14 @@ echo
 
 # The example names a real wrapper, read from the tree that was just installed rather than written
 # out here — so it stays right when the set of agents changes.
-example="$(wrapper_names "${SOURCE}" | head -n 1)"
+#
+# Not `| head -n 1`: head closes the pipe after the first line, and wrapper_names is still printf-ing
+# the other ten. printf is a bash builtin, so instead of dying on SIGPIPE the way sed or find would,
+# it reports the failed write — and the last thing a successful install said was
+#     install.sh: line 84: printf: write error: Broken pipe
+# Taking the first line after the fact needs no pipe and cannot race.
+example="$(wrapper_names "${SOURCE}")"
+example="${example%%$'\n'*}"
 
 echo
 case ":${PATH}:" in

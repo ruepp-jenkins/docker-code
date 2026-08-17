@@ -193,3 +193,31 @@ EOF
     done
     return 0
 }
+
+@test "the installer never pipes its wrapper list into a reader that stops early" {
+    # head closes the pipe after the first line while wrapper_names is still printf-ing the other ten.
+    # printf is a bash builtin, so where sed or find would die quietly on SIGPIPE, it reports the
+    # failed write instead — and the last line of a successful install was
+    #     install.sh: line 84: printf: write error: Broken pipe
+    ! grep -qE 'wrapper_names[^|]*\|[[:space:]]*head' "${REPO_ROOT}/install.sh" || {
+        echo "install.sh pipes wrapper_names into head; take the first line after the fact instead"
+        return 1
+    }
+}
+
+@test "a successful install says nothing on stderr, even with SIGPIPE ignored" {
+    # The condition the report came from. With SIGPIPE at its default the writer is killed silently
+    # and the bug does not reproduce — which is why it survived to a release. Ignoring SIGPIPE makes
+    # write() return EPIPE instead, which is what the reporting shell had inherited.
+    run bash -c "
+        trap '' PIPE
+        INSTALL_DIR='${BATS_TEST_TMPDIR}/bin' DOCKER_CODE_PREFIX='${BATS_TEST_TMPDIR}/share' \
+            bash '${REPO_ROOT}/install.sh' --local '${REPO_ROOT}' 2>&1 >/dev/null
+    "
+    [ "${status}" -eq 0 ]
+    [ -z "${output}" ] || {
+        echo "the installer wrote to stderr:"
+        echo "${output}"
+        return 1
+    }
+}
