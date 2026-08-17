@@ -940,6 +940,7 @@ cmd_models() {
     case "${action}" in
         up)     models_up && models_status ;;
         down)   models_down ;;
+        restart) models_restart "$@" && models_status ;;
         status) models_status ;;
         pull)   [ "$#" -gt 0 ] || die "usage: docker-code models pull <model>"
                 models_exec_ollama pull "$@" ;;
@@ -949,7 +950,8 @@ cmd_models() {
         run)    [ "$#" -gt 0 ] || die "usage: docker-code models run <model>"
                 docker exec -it "${OLLAMA_CONTAINER}" ollama run "$@" ;;
         logs)   docker logs --tail 100 -f "${1:-${OLLAMA_CONTAINER}}" ;;
-        *)      die "unknown: docker-code models ${action} (up, down, status, pull, list, rm, run, logs)" ;;
+        *)      die "unknown: docker-code models ${action}" \
+                    "(up, down, restart, status, pull, list, rm, run, logs)" ;;
     esac
 }
 
@@ -1127,7 +1129,8 @@ Usage:
   docker-code build [agent...]    build images locally (default: base + all agents)
   docker-code update [agent...]   pull the published images
   docker-code self-update         update docker-code itself, the agents and the wrappers
-  docker-code models <cmd>        up | down | status | pull <m> | list | rm <m> | run <m> | logs
+  docker-code models <cmd>        up | down | restart | status | pull <m> | list | rm <m> | run <m>
+                                  | logs
   docker-code registry <cmd>      start | stop | status  (Docker Hub pull-through cache)
   docker-code egress <cmd>        status | stop [agent...] | logs <agent>  (NET=gateway proxies)
   docker-code doctor              what is installed, valid and present

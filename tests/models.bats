@@ -376,3 +376,79 @@ esac'
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"docker-code models up"* ]]
 }
+
+# ---------------------------------------------------------------------------------------------
+# restart
+# ---------------------------------------------------------------------------------------------
+
+@test "restart recreates the containers rather than calling docker restart" {
+    # The reason to restart one of these is almost always a setting that only applies at creation —
+    # DOCKER_CODE_OLLAMA_ENV, a GPU mode, a pinned image tag, the LiteLLM config. `docker restart`
+    # would keep the container as it was created and look like it had done nothing.
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_restart'
+    [ "${status}" -eq 0 ]
+
+    calls="$(stub_calls docker)"
+    [[ "${calls}" != *"docker restart"* ]]
+    [[ "${calls}" == *"rm -f docker-code-ollama"* ]]
+    [[ "${calls}" == *"rm -f docker-code-litellm"* ]]
+    [[ "${calls}" == *"--name docker-code-ollama"* ]]
+    [[ "${calls}" == *"--name docker-code-litellm"* ]]
+}
+
+@test "restart stops before removing, so a write in flight gets its SIGTERM" {
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_restart ollama'
+    [ "${status}" -eq 0 ]
+
+    # The stop has to be recorded before the removal of the same container.
+    calls="$(stub_calls docker)"
+    stop_line="$(printf '%s\n' "${calls}" | grep -n '^stop docker-code-ollama' | head -n 1 | cut -d: -f1)"
+    rm_line="$(printf '%s\n' "${calls}" | grep -n '^rm -f docker-code-ollama' | head -n 1 | cut -d: -f1)"
+    [ -n "${stop_line}" ] && [ -n "${rm_line}" ]
+    [ "${stop_line}" -lt "${rm_line}" ]
+}
+
+@test "naming one service restarts only that one" {
+    # Editing LiteLLM's config.yaml — which is yours and never overwritten — needs only that half,
+    # and taking Ollama down with it would drop a loaded model from VRAM for nothing.
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 0 ;;
+    *"State.Running"*) echo true ;;
+esac'
+    run models_sh 'models_restart litellm'
+    [ "${status}" -eq 0 ]
+
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"rm -f docker-code-litellm"* ]]
+    [[ "${calls}" != *"rm -f docker-code-ollama"* ]]
+    [[ "${calls}" != *"stop docker-code-ollama"* ]]
+}
+
+@test "restart leaves the network alone, unlike down" {
+    # Removing it would disturb every attached session to no purpose: the containers rejoin the same
+    # network by name.
+    make_stub docker 'case "$*" in
+    "network inspect"*) exit 1 ;;
+    inspect*) echo "" ;;
+esac'
+    run models_sh 'models_restart'
+    [ "${status}" -eq 0 ]
+    [[ "$(stub_calls docker)" != *"network rm"* ]]
+}
+
+@test "an unknown service is refused rather than silently restarting everything" {
+    make_stub docker 'echo ""'
+    run models_sh 'models_restart sideways'
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"ollama"* ]]
+    [[ "${output}" == *"litellm"* ]]
+    [[ "$(stub_calls docker)" != *"rm -f"* ]]
+}

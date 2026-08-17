@@ -23,7 +23,7 @@ It is not a secret: it authenticates a container to a gateway on a private Docke
 
 Ollama does not validate the key, but most tools require a non-empty value. Using `docker-code-local` consistently avoids needless differences.
 
-Change it through `LOCAL_API_KEY` in `lib/models.sh`, then run `docker-code models down && docker-code models up`.
+Change it through `LOCAL_API_KEY` in `lib/models.sh`, then run `docker-code models restart`.
 
 ---
 
@@ -100,7 +100,7 @@ Ollama chooses the value according to available VRAM (4k/32k/256k). If it says `
 
 ```bash
 export DOCKER_CODE_OLLAMA_ENV="OLLAMA_CONTEXT_LENGTH=32768"
-docker-code models down && docker-code models up
+docker-code models restart
 ```
 
 More context costs VRAM — if `ollama ps` shows a CPU/GPU split afterwards, it was too much.
@@ -212,11 +212,11 @@ Two manufacturers, two completely different ways into the container: NVIDIA via 
 | `rocm` | **AMD**: `--device /dev/kfd --device /dev/dri` **and** the image `ollama/ollama:rocm` |
 | `0` | Force CPU |
 
-All of this takes effect when **creating** the container. So after each change:
+All of this takes effect when **creating** the container, which is why `restart` recreates rather
+than calling `docker restart`. So after each change:
 
 ```bash
-docker-code models down
-DOCKER_CODE_MODELS_GPU=rocm docker-code models up
+DOCKER_CODE_MODELS_GPU=rocm docker-code models restart
 ```
 
 The variable permanently belongs in the `.bashrc` — it is a setting of the model services, not the session, and therefore has **no** `DOCKER_CODE_<AGENT>_` form.
@@ -307,7 +307,7 @@ export DOCKER_CODE_MODELS_GPU=rocm
 export DOCKER_CODE_OLLAMA_ENV="HSA_OVERRIDE_GFX_VERSION=10.3.0"
 ```
 
-Then `docker-code models down && docker-code models up` once, and each session takes the card.
+Then `docker-code models restart` once, and each session takes the card.
 
 #### `HSA_OVERRIDE_GFX_VERSION` — the button where it usually hangs
 
@@ -458,9 +458,9 @@ watch -n 1 'cat /sys/class/drm/card*/device/gpu_busy_percent' # AMD, without roc
 
 | observation | Cause |
 |---|---|
-| `models status` says `not requested` | The detection did not find any `nvidia` runtime → `DOCKER_CODE_MODELS_GPU=1` (NVIDIA) or `=rocm` (AMD), then `models down && models up` |
+| `models status` says `not requested` | The detection did not find any `nvidia` runtime → `DOCKER_CODE_MODELS_GPU=1` (NVIDIA) or `=rocm` (AMD), then `models restart` |
 | Step 2 above fails | Container Toolkit is missing or Docker did not restart after `nvidia-ctk` |
-| Step 3 fails, step 2 works | the container was already running before the change — `docker-code models down && docker-code models up` |
+| Step 3 fails, step 2 works | the container was already running before the change — `docker-code models restart` |
 | `requested at start`, but `computing on cpu` | NVIDIA: Driver too old for CUDA version in image. AMD: see the [AMD table](#if-it-doesnt-work) — usually Image or ISA. `docker logs docker-code-ollama` gives the reason |
 | `PROCESSOR` shows a split | Model does not fit into VRAM → smaller version (`7b`) or stronger quantization |
 
@@ -761,6 +761,7 @@ docker run --rm --network docker-code-net curlimages/curl -s \
 ```bash
 docker-code models up            # starten (idempotent)
 docker-code models down          # Stop and remove the network
+docker-code models restart       # Recreate both; add ollama or litellm for one of them
 docker-code models status        # Zustand, Speicherort, Belegung
 docker-code models pull <model>
 docker-code models list
@@ -768,6 +769,21 @@ docker-code models rm <model>
 docker-code models run <model>  # Talk directly to the model, without an agent
 docker-code models logs [container]
 ```
+
+`restart` **recreates** the containers rather than calling `docker restart`, because the reason to
+restart one is almost always a setting that changed — `DOCKER_CODE_OLLAMA_ENV`, a GPU mode, a pinned
+image tag, or the LiteLLM `config.yaml` you just edited. All of those apply when the container is
+created, so `docker restart` would keep the old ones and look like it had done nothing. Nothing is
+lost: the weights and the gateway config are both on bind mounts.
+
+Name one service when only that half needs it — editing `config.yaml`, which is yours and is never
+overwritten, is the usual case:
+
+```bash
+docker-code models restart litellm
+```
+
+Unlike `down`, the network is left in place, so attached sessions are not disturbed.
 
 If something doesn't start, it's a warning and not a failed session: the agent then continues to run with its cloud provider. A model gateway is worth less than the session it would otherwise prevent.
 

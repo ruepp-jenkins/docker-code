@@ -308,6 +308,50 @@ models_down() {
     docker network rm "${MODELS_NETWORK}" >/dev/null 2>&1 || true
 }
 
+# models_restart [ollama|litellm ...]
+#
+# Recreated rather than `docker restart`, because the reason to restart one of these is almost always
+# a setting that changed: DOCKER_CODE_OLLAMA_ENV, a GPU mode, a pinned image tag, or the LiteLLM
+# config.yaml you just edited. `docker restart` keeps the container exactly as it was created, so
+# none of those would take effect and the command would look like it had done nothing.
+#
+# Nothing is lost by recreating. The weights live on a bind mount and so does the gateway config; the
+# containers themselves hold no state worth carrying across.
+#
+# The network is deliberately left alone, unlike models_down. Removing it would disturb every
+# attached session to no purpose — the containers rejoin the same network by name.
+models_restart() {
+    local target container
+
+    # No argument restarts both, which is what `restart` on its own should mean. Naming one is for
+    # the case that has an obvious trigger: editing LiteLLM's config, which is yours to edit and is
+    # never overwritten, needs only that half restarted.
+    if [ "$#" -eq 0 ]; then
+        set -- ollama litellm
+    fi
+
+    for target in "$@"; do
+        case "${target}" in
+            ollama)  container="${OLLAMA_CONTAINER}" ;;
+            litellm) container="${LITELLM_CONTAINER}" ;;
+            *)
+                warn "unknown service '${target}'; docker-code models restart [ollama|litellm]"
+                return 1
+                ;;
+        esac
+
+        # Stop first so the daemon gets a SIGTERM and time to finish a write, then force the removal:
+        # a stop that timed out would otherwise leave the container running, and models_up returns
+        # early for anything already up — so the restart would silently not happen.
+        docker stop "${container}" >/dev/null 2>&1 || true
+        docker rm -f "${container}" >/dev/null 2>&1 || true
+    done
+
+    # models_up starts only what is not running, so removing exactly the targeted containers above is
+    # what makes a partial restart partial.
+    models_up
+}
+
 models_status() {
     local c state
     printf '%-24s %-10s %s\n' CONTAINER STATE IMAGE
