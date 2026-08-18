@@ -110,8 +110,13 @@ common-domain lists for exactly that reason. See [Egress](docs/EGRESS.md).
   it, rather than narrating the code.
 - An agent installed from a package registry needs a `URLTriggerEntry` in `Jenkinsfile`, because
   self-updaters are disabled in the images. `tests/pipeline.bats` enforces this for npm packages.
-- If an agent Dockerfile adds an apt repository, pin and verify the signing-key fingerprint. See
-  `agents/claude/Dockerfile`.
+- Whatever an agent Dockerfile installs from the network has to be verified. An apt repository means
+  pinning and checking the signing-key fingerprint (`agents/claude/Dockerfile`); a tarball or zip
+  means a published checksum, verified before it is unpacked (`agents/kiro/Dockerfile`). Cursor is
+  the one exception and is meant to stay visible as one: its vendor ships only
+  `curl https://cursor.com/install | bash`, with no versioned artifact and no checksum to check
+  against, which is also why `Jenkinsfile` cannot watch it for releases. Do not read that exception
+  as the rule for the next agent.
 
 ## Task-specific instructions
 

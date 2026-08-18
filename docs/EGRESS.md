@@ -80,6 +80,12 @@ the last one exits. Per agent rather than one shared proxy so that each agent's 
 its own bound — a single gateway would have to allow the union, and a Codex session could then reach
 `api.anthropic.com`.
 
+Sharing has one consequence worth knowing: the allowlist is rewritten every time a session of that
+agent starts, and the gateway is recreated around it. A second session started with a wider
+`DOCKER_CODE_ALLOW_DOMAINS` therefore widens the policy for the session already running, which never
+asked for it. The newest start wins, for every session behind that gateway. Where two sessions of one
+agent must not share a bound, give them different agents or start them with the same allowlist.
+
 ```bash
 docker-code egress status              # which gateways are up, and where their allowlist is
 docker-code egress logs <agent>        # what was allowed and what was refused

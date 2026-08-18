@@ -1,9 +1,16 @@
 #!/bin/bash
 # Default-deny egress with an allowlist, for DOCKER_CODE_NET=restricted.
 #
-# The point is not to protect the host — the container boundary does that. It is to bound what a
-# session that runs without permission prompts can reach, so that a prompt injection or a hostile
-# dependency has nowhere to send what it can read.
+# The point is not to protect the host — the container boundary does that. It is to bound which
+# hosts a session that runs without permission prompts can reach, so that a prompt injection or a
+# hostile dependency has to work within a named list rather than posting to an address of its own.
+#
+# A bound, not a seal, and worth being exact about. A good part of the list is general-purpose
+# hosting that anyone can write to: storage.googleapis.com is on every agent's list — Dart archives,
+# GitLab and GCR blobs — gitlab.com and bitbucket.org are here as dependency sources, and .github.com
+# comes with ALLOW_GITHUB. Every one of them also accepts a push. Each is therefore a working
+# exfiltration route that this allowlist permits, and each is here because an ecosystem needs it.
+# What the mode buys is that everything else is closed, not that nothing can leave.
 #
 # Which vendor hosts to allow is the agent's business, not this script's: AGENT_DOMAINS in
 # /etc/docker-code/agent.env is the per-tool list, and the first domain in it is also what the

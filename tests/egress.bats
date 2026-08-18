@@ -805,3 +805,22 @@ EOF
     [[ "${output}" == *"DOCKER_CODE_NET=gateway"* ]]
     [[ "${output}" != *"Consider DOCKER_CODE_NET=restricted"* ]]
 }
+
+@test "squid's own cache manager is denied, not merely unreachable by accident" {
+    # Dropping the stock config to escape `http_access allow localnet` also dropped its
+    # `http_access deny manager`. A manager request is addressed to the gateway's own name, which no
+    # allowlist contains, so today it is refused by the catch-all — but a wildcard in
+    # DOCKER_CODE_ALLOW_DOMAINS broad enough to cover that name would quietly expose it.
+    write_config codex api.openai.com
+    grep -q '^http_access deny manager$' "${CONFIG}"
+
+    # And before the allows, because squid is first-match-wins.
+    local deny allow
+    deny="$(grep -n '^http_access deny manager$' "${CONFIG}" | cut -d: -f1)"
+    allow="$(grep -n '^http_access allow' "${CONFIG}" | head -n 1 | cut -d: -f1)"
+    [ "${deny}" -lt "${allow}" ] || {
+        echo "the manager deny sits after the first allow, where it decides nothing:"
+        grep -n '^http_access' "${CONFIG}"
+        return 1
+    }
+}

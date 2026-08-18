@@ -70,10 +70,13 @@ To use another location, set `export DOCKER_CODE_HOME=/absolute/path`.
 | the directory from which you started it (rw) | any other path on the host |
 | `~/docker-code/models/` (ro, only with `DOCKER_CODE_LOCAL=1`) | `/var/run/docker.sock` — **never** mounted |
 | explicit extras via `DOCKER_CODE_MOUNT` | `~/.gitconfig`, `$SSH_AUTH_SOCK` (opt-in, off by default) |
+| the API keys its own tool reads, from your shell | every other variable in your environment |
 
 Starting from the home directory or from `/` is **rejected**, not just criticized. `tests/isolation.bats` keeps this list as a negative assertion so that it doesn't grow unnoticed.
 
-**Honestly:** The inner Docker daemon runs `privileged` by default because that's the only mode that works on all tested hosts - both on Linux and macOS. A privileged container is therefore **no security boundary to the host**. What is written above is a file system shield: your home and your credentials are excluded. It is not an outbreak protection. Whoever wants it: `DOCKER_CODE_DIND=0` (no inner daemon, no `--privileged`) and `DOCKER_CODE_NET=restricted`.
+**The last row is the one people miss.** The pass-through is a named list, not a copy of your environment — but what it names are credentials. `AGENT_ENV_VARS` in `agents/<id>/agent.env` is that list, and it hands the container what its tool needs to authenticate: `ANTHROPIC_API_KEY` for Claude, `GH_TOKEN` and `GITHUB_TOKEN` for Copilot, `OPENAI_API_KEY` for Codex, `AWS_PROFILE` and `AWS_REGION` where the tool speaks to Bedrock or Q. There is no opt-in, because a tool that cannot log in is not a tool. It follows that a broadly scoped token exported in your shell profile is a token the agent has — worth a thought before `DOCKER_CODE_YOLO=1`, and an argument for tokens scoped to what the session is actually for.
+
+**Honestly:** The inner Docker daemon runs `privileged` by default because that's the only mode that works on all tested hosts - both on Linux and macOS. A privileged container is therefore **no security boundary to the host**. What is written above is a file system shield: your home and the credentials *on disk* are excluded, while the ones in your environment are handed over on purpose. It is not an outbreak protection. Whoever wants it: `DOCKER_CODE_DIND=0` (no inner daemon, no `--privileged`) and `DOCKER_CODE_NET=gateway`.
 
 ---
 

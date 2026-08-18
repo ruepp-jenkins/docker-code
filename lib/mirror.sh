@@ -177,19 +177,43 @@ mirror_start() {
         /*) mirror_create+=(--user "$(id -u):$(id -g)") ;;
     esac
 
+    ensure_image "${MIRROR_IMAGE}" "the registry mirror" || return 1
+    say "starting the registry mirror"
+
     # Hub's rate limit counts anonymous pulls per IP, which on a shared connection is everyone at
     # once. One account on the mirror lifts it for every session behind it.
+    #
+    # Through a file rather than --env, which is where a password should not be. An argument to
+    # `docker run` is in the host's process table for as long as the call takes — visible to every
+    # other user on a shared machine — and `docker inspect` then keeps it in the container's config
+    # for as long as the mirror lives, which is across sessions. The file is 0600, the daemon reads
+    # it while creating the container, and it is gone before this function returns.
+    local env_file=""
     if [ -n "${DOCKER_CODE_REGISTRY_USERNAME:-}" ]; then
-        mirror_create+=(--env "REGISTRY_PROXY_USERNAME=${DOCKER_CODE_REGISTRY_USERNAME}")
-        mirror_create+=(--env "REGISTRY_PROXY_PASSWORD=${DOCKER_CODE_REGISTRY_PASSWORD:-}")
+        env_file="$(mktemp "${TMPDIR:-/tmp}/docker-code-registry.XXXXXX")" || {
+            warn "cannot write the registry credentials to a temporary file"
+            return 1
+        }
+        chmod 0600 "${env_file}"
+        # No quoting and no escapes: --env-file takes the rest of the line literally, which is what a
+        # password needs.
+        {
+            printf 'REGISTRY_PROXY_USERNAME=%s\n' "${DOCKER_CODE_REGISTRY_USERNAME}"
+            printf 'REGISTRY_PROXY_PASSWORD=%s\n' "${DOCKER_CODE_REGISTRY_PASSWORD:-}"
+        } >"${env_file}"
+        mirror_create+=(--env-file "${env_file}")
     fi
 
     mirror_create+=("${MIRROR_IMAGE}")
 
-    ensure_image "${MIRROR_IMAGE}" "the registry mirror" || return 1
-    say "starting the registry mirror"
+    local started=0
+    "${mirror_create[@]}" >/dev/null 2>&1 && started=1
 
-    "${mirror_create[@]}" >/dev/null 2>&1 && return 0
+    # Before every return below, not after one of them: the credentials must not outlive the call
+    # that used them, whether it worked or not.
+    [ -z "${env_file}" ] || rm -f "${env_file}"
+
+    [ "${started}" = "0" ] || return 0
 
     # Losing a race against another session that created it first is not a failure.
     [ "$(docker inspect -f '{{.State.Running}}' "${MIRROR_CONTAINER}" 2>/dev/null || true)" = "true" ]
