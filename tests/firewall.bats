@@ -151,3 +151,43 @@ EOF
     # spelling them out.
     grep -q 'ALLOW_DOMAINS' "${REPO_ROOT}/bin/docker-code"
 }
+
+@test "a nested container gets the session's reach, not the whole private address space" {
+    # DOCKER-USER used to RETURN for 10/8, 172.16/12 and 192.168/16 outright, which gave a container
+    # the agent starts more reach than the agent itself has: the OUTPUT chain accepts only the
+    # networks this session is attached to. `docker run alpine wget http://10.x.x.x/` was therefore a
+    # way around the allowlist and onto whatever the host shares a LAN with — in the one mode whose
+    # whole purpose is bounding an agent that has been talked into exfiltrating something.
+    block="$(sed -n '/^if iptables -L DOCKER-USER/,/^fi$/p' "${FIREWALL}")"
+    [ -n "${block}" ]
+
+    for private in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+        [[ "${block}" != *"${private}"* ]] || {
+            echo "DOCKER-USER still allows ${private} outright:"
+            printf '%s\n' "${block}"
+            return 1
+        }
+    done
+}
+
+@test "nested containers can still reach each other, including on a network made later" {
+    # The reason the blanket rule existed: a compose stack talks to itself over an inner bridge. That
+    # traffic is delivered through docker0 or a br-<id> the inner daemon created, so matching the
+    # outbound interface keeps it working — and the wildcard covers a network the agent creates after
+    # this script has run, which no destination rule written here could.
+    block="$(sed -n '/^if iptables -L DOCKER-USER/,/^fi$/p' "${FIREWALL}")"
+    [[ "${block}" == *'-o "${bridge}" -j RETURN'* ]]
+    [[ "${block}" == *"docker0 br-+"* ]]
+}
+
+@test "a nested container may reach exactly the networks the session is attached to" {
+    # Parity with the OUTPUT rules, which accept the session's own link-scope routes: the shared
+    # model services and the registry mirror stay reachable from a compose stack, and nothing else
+    # does. Both chains read the same source, so they cannot drift into disagreeing.
+    block="$(sed -n '/^if iptables -L DOCKER-USER/,/^fi$/p' "${FIREWALL}")"
+    [[ "${block}" == *"ip -o -f inet route show scope link"* ]]
+
+    # And the catch-all rejection is still last, or everything above it is decoration.
+    [ "$(printf '%s\n' "${block}" | grep -c 'DOCKER-USER -j REJECT')" -eq 1 ]
+    printf '%s\n' "${block}" | grep 'iptables -A DOCKER-USER' | tail -n 1 | grep -q 'REJECT'
+}

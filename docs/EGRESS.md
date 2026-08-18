@@ -18,11 +18,35 @@ checked. A CDN that rotates its edge addresses therefore breaks a session that w
 earlier — `production.cloudfront.docker.com` was observed moving from `108.138.36.x` to
 `18.66.102.x` inside two minutes. Naming a host is not enough when the host is a moving target.
 
+The same property makes the list considerably wider than it reads. Much of what a build needs sits
+behind a shared CDN, and an address admits everything else parked on it:
+
+| name | resolves to | frontend |
+|---|---|---|
+| `jsr.io` | `104.21.7.32`, `172.67.135.174` | Cloudflare |
+| `index.crates.io` | `151.101.{2,66,130,194}.137` | Fastly |
+| `storage.googleapis.com` | `34.3.0.27`, `34.144.170.27`, … | Google |
+
+Once those addresses are in the ipset, every co-tenant behind the same frontend is reachable as well.
+Nothing in this mode looks at SNI or at the `Host` header, so a request merely addressed to an allowed
+IP goes through whatever name it carries. Each CDN-hosted entry therefore widens the bound by however
+much its frontend serves, and the language registries above are mostly CDN-hosted. `gateway` has no
+equivalent: it matches the name the client asked for, and the address never enters into it.
+
 **It runs inside the container it restricts.** That is why `restricted` has to grant the session
 `NET_ADMIN`. With the default `DIND=privileged`, the inner daemon shares the session's network
 namespace, so a nested privileged container can flush the rules meant to bound it. Against a careless
 agent that never happens; against a prompt injection or a hostile dependency — the threat the mode
-names — it is exactly the actor who would.
+names — it is exactly the actor who would. Starting a session that way now says so, because a default
+`DIND` next to an explicitly chosen `NET` is a combination nobody opted into.
+
+**A nested container gets the session's reach, and no more.** `DOCKER-USER` allows the networks this
+session is attached to — the shared services, the registry mirror — plus traffic delivered through an
+inner bridge, so a compose stack talks to itself. The private address space is not allowed wholesale:
+that would give a container the agent started more reach than the agent has, and make
+`docker run alpine wget http://10.x.x.x/` a way onto whatever the host shares a LAN with. A LAN
+destination you do need is named in `DOCKER_CODE_ALLOW_DOMAINS`, which takes CIDRs and applies to
+nested containers too.
 
 Under `gateway`, the session gets **no capabilities at all**, and the allowlist is a list of names:
 
@@ -71,6 +95,12 @@ the last one exits. Per agent rather than one shared proxy so that each agent's 
 its own bound — a single gateway would have to allow the union, and a Codex session could then reach
 `api.anthropic.com`.
 
+Sharing has one consequence worth knowing: the allowlist is rewritten every time a session of that
+agent starts, and the gateway is recreated around it. A second session started with a wider
+`DOCKER_CODE_ALLOW_DOMAINS` therefore widens the policy for the session already running, which never
+asked for it. The newest start wins, for every session behind that gateway. Where two sessions of one
+agent must not share a bound, give them different agents or start them with the same allowlist.
+
 ```bash
 docker-code egress status              # which gateways are up, and where their allowlist is
 docker-code egress logs <agent>        # what was allowed and what was refused
@@ -89,7 +119,15 @@ written once and left to you. This file *is* the policy; a stale copy is a wrong
 | built in | the language package registries and source forges — see below |
 | built in, when there is an inner Docker | the image registries and OS package archives — see below |
 | `DOCKER_CODE_ALLOW_GITHUB=1` (the default) | `.github.com`, `.githubusercontent.com` |
+| built in | `docker-code-ollama`, `docker-code-litellm`, `docker-code-registry` |
 | `DOCKER_CODE_ALLOW_DOMAINS` | yours, verbatim — names or CIDRs |
+
+`DOCKER_CODE_ALLOW_GITHUB=0` is narrower than the name suggests. It drops the two wildcards in that
+row, but `raw.githubusercontent.com` stays — it is on the list as a dependency source rather than as a
+GitHub convenience — and so does `pkg-containers.githubusercontent.com`, deliberately, so that turning
+GitHub off does not take `ghcr.io` down with it. `gitlab.com`, `bitbucket.org` and `api.bitbucket.org`
+are not governed by the knob at all. Set it to `0` to shorten the list and it does that; set it to `0`
+to close a route out and it does not, because everything just named accepts a push.
 
 ### The language package registries
 
@@ -179,6 +217,18 @@ Amazon ECR Public's layer bucket. If a pull from either stalls after the manifes
 redirect names to `DOCKER_CODE_ALLOW_DOMAINS`. Under `NET=gateway` the refusal is in the proxy log —
 `docker logs docker-code-egress-<agent>` — which is the fastest way to find out which host it wanted.
 
+### Reaching the shared services
+
+The three service names are there because in this mode the session has no route to their networks —
+the gateway joins those instead, and everything inside reaches them by `CONNECT`ing to them by name,
+exactly like an internet host. They are container names on Docker networks, so they resolve to
+nothing when the gateway was never attached to the network in question; listing them unconditionally
+is what keeps the allowlist in step with a `DOCKER_CODE_LOCAL=1` or `DOCKER_CODE_REGISTRY_MIRROR=1`
+that is decided after the gateway has already started.
+
+They are also why squid is told about ports 11434, 4000 and 5000: those services speak plain HTTP,
+and squid refuses `CONNECT` outside 443 and 563 by default.
+
 `AGENT_DOMAINS` is emitted exactly as written, never widened into a wildcard. Those names still have
 to resolve for `NET=restricted`, and `.openai.com` resolves to nothing — and deriving a subtree from a
 hostname would quietly widen every agent's bound.
@@ -262,6 +312,7 @@ The gateway must also allow `CONNECT` to port 22, which the generated config doe
 | | `restricted` | `gateway` |
 |---|---|---|
 | filters on | destination IP, resolved once at startup | domain name, per request |
+| an entry admits | every co-tenant on its CDN frontend | that name, and nothing else |
 | wildcards | no | yes — `.docker.com` |
 | session holds `NET_ADMIN` | yes | no |
 | survives a CDN rotating addresses | no | yes |

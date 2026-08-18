@@ -1,9 +1,16 @@
 #!/bin/bash
 # Default-deny egress with an allowlist, for DOCKER_CODE_NET=restricted.
 #
-# The point is not to protect the host — the container boundary does that. It is to bound what a
-# session that runs without permission prompts can reach, so that a prompt injection or a hostile
-# dependency has nowhere to send what it can read.
+# The point is not to protect the host — the container boundary does that. It is to bound which
+# hosts a session that runs without permission prompts can reach, so that a prompt injection or a
+# hostile dependency has to work within a named list rather than posting to an address of its own.
+#
+# A bound, not a seal, and worth being exact about. A good part of the list is general-purpose
+# hosting that anyone can write to: storage.googleapis.com is on every agent's list — Dart archives,
+# GitLab and GCR blobs — gitlab.com and bitbucket.org are here as dependency sources, and .github.com
+# comes with ALLOW_GITHUB. Every one of them also accepts a push. Each is therefore a working
+# exfiltration route that this allowlist permits, and each is here because an ecosystem needs it.
+# What the mode buys is that everything else is closed, not that nothing can leave.
 #
 # Which vendor hosts to allow is the agent's business, not this script's: AGENT_DOMAINS in
 # /etc/docker-code/agent.env is the per-tool list, and the first domain in it is also what the
@@ -342,9 +349,28 @@ if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
     iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     iptables -A DOCKER-USER -p udp --dport 53 -j RETURN
     iptables -A DOCKER-USER -m set --match-set "${IPSET_NAME}" dst -j RETURN
-    # Container-to-container traffic on the inner bridges, so compose stacks keep working.
-    for private in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
-        iptables -A DOCKER-USER -d "${private}" -j RETURN
+    # Nested containers reaching each other, so compose stacks keep working — matched on the bridge
+    # the traffic is delivered through rather than on an RFC1918 destination.
+    #
+    # The destination form allowed 10/8, 172.16/12 and 192.168/16 outright, which handed a nested
+    # container more reach than the agent that started it: the session's own OUTPUT chain accepts
+    # only the networks it is attached to, so `docker run alpine wget http://10.x.x.x/` was a way
+    # around the allowlist and onto whatever the host shares a LAN with. Anything off-box leaves
+    # through the session's external interface, is not matched here, and stays subject to the ipset.
+    #
+    # `+` is iptables' trailing wildcard. A network the agent creates after this script has run gets
+    # a br-<id> bridge of its own, and covering the pattern is what keeps that working without a rule
+    # per network — there is no later pass to add one.
+    for bridge in docker0 br-+; do
+        iptables -A DOCKER-USER -o "${bridge}" -j RETURN
+    done
+
+    # Parity with the session itself, and no more: the networks it is attached to are the ones its
+    # own OUTPUT rules accept above — the shared model services, the registry mirror. A nested
+    # container may reach exactly those.
+    # shellcheck disable=SC2046  # one network per line, splitting is the point
+    for network in $(ip -o -f inet route show scope link | awk '{print $1}'); do
+        iptables -A DOCKER-USER -d "${network}" -j RETURN
     done
     iptables -A DOCKER-USER -j REJECT --reject-with icmp-port-unreachable
 fi

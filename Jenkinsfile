@@ -35,7 +35,14 @@ def checkoutRepo() {
 // once rather than once per agent into the same workspace.
 def buildImage(String agentId, String arch, String platform) {
     withEnv(["AGENT_ID=${agentId}", "EXPECTED_PLATFORM=${platform}", "TEST_REPORT_SUFFIX=${arch}"]) {
-        sh './scripts/start.sh'
+        // Bound here rather than in the pipeline's environment block, which would export the registry
+        // password into every sh step on every agent — the cleanup, the QEMU registration, the test
+        // suite — none of which log in. This is the only step in this function that does:
+        // start.sh calls scripts/docker_initialize.sh. The stash below deliberately stays outside.
+        withCredentials([string(credentialsId: 'DOCKER_API_PASSWORD',
+                                variable: 'DOCKER_API_PASSWORD')]) {
+            sh './scripts/start.sh'
+        }
 
         // The image was pushed without a tag, so its digest is the only handle on it — and it is on
         // the wrong machine. stash is the one channel declarative pipelines offer between agents. It
@@ -48,7 +55,11 @@ def publishManifest(String agentId) {
     withEnv(["AGENT_ID=${agentId}"]) {
         unstash "digest-${agentId}-amd64"
         unstash "digest-${agentId}-arm64"
-        sh './scripts/docker_manifest.sh'
+        // The second and last place that logs in — see buildImage for why the binding is here.
+        withCredentials([string(credentialsId: 'DOCKER_API_PASSWORD',
+                                variable: 'DOCKER_API_PASSWORD')]) {
+            sh './scripts/docker_manifest.sh'
+        }
     }
 }
 
@@ -61,7 +72,6 @@ pipeline {
         // The stem; scripts/docker_tags.sh appends -base or -<agent>, so every tool lives in its own
         // repository rather than in one tag list nobody can read.
         IMAGE_FULLNAME = 'ruepp/docker-code'
-        DOCKER_API_PASSWORD = credentials('DOCKER_API_PASSWORD')
 
         // Every agent builds its own architecture and nothing else. 'host' is what tells
         // scripts/docker_platforms.sh to skip the QEMU registration: with a machine per platform

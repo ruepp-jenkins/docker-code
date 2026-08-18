@@ -407,7 +407,7 @@ run_session() {
 
     if [ "${YOLO}" = "1" ] && [ "${NET_MODE}" = "full" ]; then
         warn "YOLO with unrestricted egress: a bypassed session can reach anything on the network."
-        warn "Consider DOCKER_CODE_NET=restricted."
+        warn "Consider DOCKER_CODE_NET=gateway, which enforces the allowlist outside the session."
     fi
 
     if [ "${YOLO}" = "1" ] && [ -z "${AGENT_YOLO_ARGS}" ]; then
@@ -695,6 +695,22 @@ session_network() {
             # The firewall runs inside the container, so the container needs to be allowed to write
             # iptables rules for its own namespace.
             run+=(--cap-add NET_ADMIN --cap-add NET_RAW)
+
+            # Which is also the weakness of enforcing from inside. Classic dind puts a root daemon in
+            # this same network namespace, reachable by the agent through the docker group, so one
+            # nested privileged container flushes the rules meant to bound it. Against the actor this
+            # mode names — a prompt injection, a hostile dependency — that is precisely the actor who
+            # would. Said out loud rather than left to docs/EGRESS.md, because the pairing is a
+            # default DIND next to an explicitly chosen NET: nobody opted into it.
+            #
+            # Only classic dind. A rootless daemon puts its containers in a network namespace of
+            # their own, where there is nothing belonging to this session to flush.
+            if [ "${DIND_MODE}" = "privileged" ]; then
+                warn "NET=restricted with the default privileged inner Docker: that daemon shares this"
+                warn "container's network namespace, so a nested container can flush the allowlist."
+                warn "DOCKER_CODE_NET=gateway enforces outside the session, DOCKER_CODE_DIND=0 removes"
+                warn "the daemon that makes this possible."
+            fi
             ;;
         gateway)
             session_egress
@@ -736,6 +752,20 @@ session_egress() {
     esac
 
     [ "$(agent_knob ALLOW_GITHUB 1)" = "1" ] && domains+=("${EGRESS_GITHUB_DOMAINS[@]}")
+
+    # The shared services, by the container name they answer to. In this mode the session has no
+    # route to their networks — the gateway joins those instead — so the loopback bridge in
+    # image/local-models.sh and the inner daemon's registry mirror reach them by CONNECTing through
+    # the proxy, exactly like any other destination. Without these names the service_ports ACL in
+    # egress_write_config can never match anything it is paired with, and DOCKER_CODE_LOCAL=1 under
+    # NET=gateway fails at the proxy with a refusal that looks nothing like a missing allowlist entry.
+    #
+    # Deliberately not gated on whether those services are in play: session_mirror and
+    # session_local_models decide that *after* this function has written the config and started the
+    # gateway, so the answer is not known here. A name whose network the gateway never joins resolves
+    # to nothing and costs the allowlist nothing — while gating it is exactly what would let the two
+    # halves drift apart again.
+    domains+=("${OLLAMA_CONTAINER}" "${LITELLM_CONTAINER}" "${MIRROR_CONTAINER}")
 
     local extra
     extra="$(agent_knob ALLOW_DOMAINS "")"

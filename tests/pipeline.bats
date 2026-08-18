@@ -176,3 +176,41 @@ JENKINSFILE="${BATS_TEST_DIRNAME}/../Jenkinsfile"
     grep -q 'if \[ "${AGENT_ID}" = "base" \]; then' "${REPO_ROOT}/scripts/start.sh"
     grep -q 'scripts/test.sh' "${REPO_ROOT}/scripts/start.sh"
 }
+
+@test "the registry password is bound where it is used, not exported to every stage" {
+    # A `credentials()` entry in the pipeline-level environment block applies to every stage on every
+    # agent, so the Hub password would sit in the environment of the cleanup, the QEMU registration
+    # and the whole test suite — none of which log in. Only two steps do.
+    env_block="$(sed -n '/^    environment {/,/^    }/p' "${JENKINSFILE}")"
+    [ -n "${env_block}" ]
+    [[ "${env_block}" != *"credentials("* ]] || {
+        echo "a credential is exported to every stage from the environment block:"
+        printf '%s\n' "${env_block}" | grep 'credentials('
+        return 1
+    }
+
+    # And it is still bound somewhere, or every push would fail instead.
+    [ "$(grep -c "credentialsId: 'DOCKER_API_PASSWORD'" "${JENKINSFILE}")" -eq 2 ]
+}
+
+@test "every step that logs in to the registry is inside the credential binding" {
+    # scripts/start.sh reaches docker_initialize.sh and scripts/docker_manifest.sh logs in directly.
+    # A third login added outside a withCredentials block would fail only in CI, at push time.
+    for script in start.sh docker_manifest.sh; do
+        grep -q "sh './scripts/${script}'" "${JENKINSFILE}" || {
+            echo "${script} is no longer called the way this test looks for it"
+            return 1
+        }
+    done
+
+    # Each of those two calls is preceded by a binding within the same helper.
+    for helper in buildImage publishManifest; do
+        block="$(sed -n "/^def ${helper}(/,/^}/p" "${JENKINSFILE}")"
+        [ -n "${block}" ]
+        [[ "${block}" == *"withCredentials"* ]] || {
+            echo "${helper} runs a login step without binding the credential:"
+            printf '%s\n' "${block}"
+            return 1
+        }
+    done
+}

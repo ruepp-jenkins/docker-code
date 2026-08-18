@@ -352,6 +352,12 @@ egress_write_config() {
         echo "acl CONNECT method CONNECT"
         echo
 
+        # squid's own cache manager, which the stock config denies and this one has to deny for
+        # itself — dropping conf.d dropped that rule along with `http_access allow localnet`. Today a
+        # manager request is refused anyway, because it is addressed to the gateway's own name and no
+        # allowlist contains that. One wildcard in DOCKER_CODE_ALLOW_DOMAINS broad enough to cover it
+        # would change that quietly, and `manager` is built in, so saying it costs a line.
+        echo "http_access deny manager"
         echo "http_access deny !Safe_ports !service_ports"
         if [ -n "${domain_list}" ]; then
             echo "http_access allow CONNECT allowed_domains SSL_ports"
