@@ -18,6 +18,21 @@ checked. A CDN that rotates its edge addresses therefore breaks a session that w
 earlier — `production.cloudfront.docker.com` was observed moving from `108.138.36.x` to
 `18.66.102.x` inside two minutes. Naming a host is not enough when the host is a moving target.
 
+The same property makes the list considerably wider than it reads. Much of what a build needs sits
+behind a shared CDN, and an address admits everything else parked on it:
+
+| name | resolves to | frontend |
+|---|---|---|
+| `jsr.io` | `104.21.7.32`, `172.67.135.174` | Cloudflare |
+| `index.crates.io` | `151.101.{2,66,130,194}.137` | Fastly |
+| `storage.googleapis.com` | `34.3.0.27`, `34.144.170.27`, … | Google |
+
+Once those addresses are in the ipset, every co-tenant behind the same frontend is reachable as well.
+Nothing in this mode looks at SNI or at the `Host` header, so a request merely addressed to an allowed
+IP goes through whatever name it carries. Each CDN-hosted entry therefore widens the bound by however
+much its frontend serves, and the language registries above are mostly CDN-hosted. `gateway` has no
+equivalent: it matches the name the client asked for, and the address never enters into it.
+
 **It runs inside the container it restricts.** That is why `restricted` has to grant the session
 `NET_ADMIN`. With the default `DIND=privileged`, the inner daemon shares the session's network
 namespace, so a nested privileged container can flush the rules meant to bound it. Against a careless
@@ -106,6 +121,13 @@ written once and left to you. This file *is* the policy; a stale copy is a wrong
 | `DOCKER_CODE_ALLOW_GITHUB=1` (the default) | `.github.com`, `.githubusercontent.com` |
 | built in | `docker-code-ollama`, `docker-code-litellm`, `docker-code-registry` |
 | `DOCKER_CODE_ALLOW_DOMAINS` | yours, verbatim — names or CIDRs |
+
+`DOCKER_CODE_ALLOW_GITHUB=0` is narrower than the name suggests. It drops the two wildcards in that
+row, but `raw.githubusercontent.com` stays — it is on the list as a dependency source rather than as a
+GitHub convenience — and so does `pkg-containers.githubusercontent.com`, deliberately, so that turning
+GitHub off does not take `ghcr.io` down with it. `gitlab.com`, `bitbucket.org` and `api.bitbucket.org`
+are not governed by the knob at all. Set it to `0` to shorten the list and it does that; set it to `0`
+to close a route out and it does not, because everything just named accepts a push.
 
 ### The language package registries
 
@@ -290,6 +312,7 @@ The gateway must also allow `CONNECT` to port 22, which the generated config doe
 | | `restricted` | `gateway` |
 |---|---|---|
 | filters on | destination IP, resolved once at startup | domain name, per request |
+| an entry admits | every co-tenant on its CDN frontend | that name, and nothing else |
 | wildcards | no | yes — `.docker.com` |
 | session holds `NET_ADMIN` | yes | no |
 | survives a CDN rotating addresses | no | yes |
