@@ -22,7 +22,16 @@ earlier — `production.cloudfront.docker.com` was observed moving from `108.138
 `NET_ADMIN`. With the default `DIND=privileged`, the inner daemon shares the session's network
 namespace, so a nested privileged container can flush the rules meant to bound it. Against a careless
 agent that never happens; against a prompt injection or a hostile dependency — the threat the mode
-names — it is exactly the actor who would.
+names — it is exactly the actor who would. Starting a session that way now says so, because a default
+`DIND` next to an explicitly chosen `NET` is a combination nobody opted into.
+
+**A nested container gets the session's reach, and no more.** `DOCKER-USER` allows the networks this
+session is attached to — the shared services, the registry mirror — plus traffic delivered through an
+inner bridge, so a compose stack talks to itself. The private address space is not allowed wholesale:
+that would give a container the agent started more reach than the agent has, and make
+`docker run alpine wget http://10.x.x.x/` a way onto whatever the host shares a LAN with. A LAN
+destination you do need is named in `DOCKER_CODE_ALLOW_DOMAINS`, which takes CIDRs and applies to
+nested containers too.
 
 Under `gateway`, the session gets **no capabilities at all**, and the allowlist is a list of names:
 
@@ -89,6 +98,7 @@ written once and left to you. This file *is* the policy; a stale copy is a wrong
 | built in | the language package registries and source forges — see below |
 | built in, when there is an inner Docker | the image registries and OS package archives — see below |
 | `DOCKER_CODE_ALLOW_GITHUB=1` (the default) | `.github.com`, `.githubusercontent.com` |
+| built in | `docker-code-ollama`, `docker-code-litellm`, `docker-code-registry` |
 | `DOCKER_CODE_ALLOW_DOMAINS` | yours, verbatim — names or CIDRs |
 
 ### The language package registries
@@ -178,6 +188,18 @@ its AWS side signs a per-region S3 bucket that cannot be named in advance; the s
 Amazon ECR Public's layer bucket. If a pull from either stalls after the manifest, add the bucket the
 redirect names to `DOCKER_CODE_ALLOW_DOMAINS`. Under `NET=gateway` the refusal is in the proxy log —
 `docker logs docker-code-egress-<agent>` — which is the fastest way to find out which host it wanted.
+
+### Reaching the shared services
+
+The three service names are there because in this mode the session has no route to their networks —
+the gateway joins those instead, and everything inside reaches them by `CONNECT`ing to them by name,
+exactly like an internet host. They are container names on Docker networks, so they resolve to
+nothing when the gateway was never attached to the network in question; listing them unconditionally
+is what keeps the allowlist in step with a `DOCKER_CODE_LOCAL=1` or `DOCKER_CODE_REGISTRY_MIRROR=1`
+that is decided after the gateway has already started.
+
+They are also why squid is told about ports 11434, 4000 and 5000: those services speak plain HTTP,
+and squid refuses `CONNECT` outside 443 and 563 by default.
 
 `AGENT_DOMAINS` is emitted exactly as written, never widened into a wildcard. Those names still have
 to resolve for `NET=restricted`, and `.openai.com` resolves to nothing — and deriving a subtree from a

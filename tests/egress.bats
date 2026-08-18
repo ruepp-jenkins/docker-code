@@ -733,3 +733,75 @@ EOF
     done
     return 0
 }
+
+@test "the gateway allowlist names the shared services, or their ports ACL matches nothing" {
+    # The session has no route to the model and mirror networks in this mode — the gateway joins them
+    # instead — so the loopback bridge and the inner daemon reach those services by CONNECTing to
+    # them by container name. squid matches CONNECT against dstdomain, so without these names the
+    # service_ports ACL is paired with an allowed_domains list that can never contain the request:
+    # DOCKER_CODE_LOCAL=1 under NET=gateway then failed at the proxy, which looks nothing like an
+    # allowlist that is missing an entry.
+    make_stub docker 'case "$*" in *State.Running*) echo true ;; esac'
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_NET=gateway DOCKER_CODE_LOCAL=1 DOCKER_CODE_LOCAL_MODEL=qwen3-coder:7b
+    run "${REPO_ROOT}/bin/qwen-docker"
+    [ "${status}" -eq 0 ] || {
+        echo "the session did not start: ${output}"
+        return 1
+    }
+
+    local conf="${DOCKER_CODE_HOME}/egress/qwen/squid.conf"
+    [ -f "${conf}" ] || {
+        echo "no allowlist was written at ${conf}"
+        return 1
+    }
+
+    for service in docker-code-ollama docker-code-litellm docker-code-registry; do
+        grep -qE "^acl allowed_domains dstdomain .*(^| )${service}( |$)" "${conf}" || {
+            echo "${service} is not in the allowlist, so the gateway would refuse it:"
+            grep '^acl allowed_domains' "${conf}"
+            return 1
+        }
+    done
+
+    # And the pairing that makes them usable: they speak plain HTTP on ports squid refuses to CONNECT
+    # to by default.
+    grep -q '^http_access allow CONNECT allowed_domains service_ports$' "${conf}"
+}
+
+@test "NET=restricted says that a privileged inner Docker can undo it" {
+    # The combination is a default DIND next to an explicitly chosen NET, so nobody opted into it:
+    # the root daemon shares the session's network namespace and one nested container flushes the
+    # rules. docs/EGRESS.md has said so all along; the session that is about to rely on it should too.
+    export DOCKER_CODE_NET=restricted
+    run "${REPO_ROOT}/bin/codex-docker"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"flush the allowlist"* ]] || {
+        echo "no warning about the inner daemon: ${output}"
+        return 1
+    }
+    [[ "${output}" == *"DOCKER_CODE_NET=gateway"* ]]
+}
+
+@test "the warning is about that daemon, not about restricted mode in general" {
+    # Without an inner daemon there is nothing in the namespace to flush, and a warning that fires
+    # anyway is one people learn to scroll past.
+    export DOCKER_CODE_NET=restricted DOCKER_CODE_DIND=0
+    run "${REPO_ROOT}/bin/codex-docker"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *"flush the allowlist"* ]] || {
+        echo "warned about a daemon this session does not have: ${output}"
+        return 1
+    }
+}
+
+@test "a YOLO session is pointed at the mode that actually holds" {
+    # It used to recommend NET=restricted, which the default privileged inner Docker lets the very
+    # actor this is warning about undo. Recommending the enforcement that lives outside the session
+    # is the whole difference.
+    export DOCKER_CODE_YOLO=1
+    run "${REPO_ROOT}/bin/codex-docker"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"DOCKER_CODE_NET=gateway"* ]]
+    [[ "${output}" != *"Consider DOCKER_CODE_NET=restricted"* ]]
+}

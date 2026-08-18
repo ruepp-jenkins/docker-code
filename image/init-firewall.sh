@@ -342,9 +342,28 @@ if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
     iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     iptables -A DOCKER-USER -p udp --dport 53 -j RETURN
     iptables -A DOCKER-USER -m set --match-set "${IPSET_NAME}" dst -j RETURN
-    # Container-to-container traffic on the inner bridges, so compose stacks keep working.
-    for private in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
-        iptables -A DOCKER-USER -d "${private}" -j RETURN
+    # Nested containers reaching each other, so compose stacks keep working — matched on the bridge
+    # the traffic is delivered through rather than on an RFC1918 destination.
+    #
+    # The destination form allowed 10/8, 172.16/12 and 192.168/16 outright, which handed a nested
+    # container more reach than the agent that started it: the session's own OUTPUT chain accepts
+    # only the networks it is attached to, so `docker run alpine wget http://10.x.x.x/` was a way
+    # around the allowlist and onto whatever the host shares a LAN with. Anything off-box leaves
+    # through the session's external interface, is not matched here, and stays subject to the ipset.
+    #
+    # `+` is iptables' trailing wildcard. A network the agent creates after this script has run gets
+    # a br-<id> bridge of its own, and covering the pattern is what keeps that working without a rule
+    # per network — there is no later pass to add one.
+    for bridge in docker0 br-+; do
+        iptables -A DOCKER-USER -o "${bridge}" -j RETURN
+    done
+
+    # Parity with the session itself, and no more: the networks it is attached to are the ones its
+    # own OUTPUT rules accept above — the shared model services, the registry mirror. A nested
+    # container may reach exactly those.
+    # shellcheck disable=SC2046  # one network per line, splitting is the point
+    for network in $(ip -o -f inet route show scope link | awk '{print $1}'); do
+        iptables -A DOCKER-USER -d "${network}" -j RETURN
     done
     iptables -A DOCKER-USER -j REJECT --reject-with icmp-port-unreachable
 fi
