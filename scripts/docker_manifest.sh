@@ -1,7 +1,9 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 : "${AGENT_ID:?AGENT_ID is not set (use 'base' or an id from agents/)}"
+: "${DOCKER_USERNAME:?DOCKER_USERNAME is not set}"
+: "${DOCKER_API_PASSWORD:?DOCKER_API_PASSWORD is not set (the Jenkinsfile binds it with withCredentials)}"
 echo "Creating the multi-architecture manifest for ${AGENT_ID}"
 
 # Joins the per-architecture images the build agents pushed into one manifest list, so a single tag

@@ -271,3 +271,125 @@ EOF
     [[ "${block}" == *"git is required"* ]]
     [[ "${block}" == *"--local"* ]]
 }
+
+@test "the two container-side agent.env parsers have not drifted apart" {
+    # image/launch.sh and image/init-firewall.sh each carry their own copy, because neither can source
+    # lib/agents.sh: the container has one agent.env at a fixed path and none of the host's layout.
+    # Two copies is the same trade as COMMON_DOMAINS in those two files — allowed, but pinned here.
+    a="$(sed -n '/^agent_get()/,/^}/p' "${REPO_ROOT}/image/launch.sh")"
+    b="$(sed -n '/^agent_get()/,/^}/p' "${REPO_ROOT}/image/init-firewall.sh")"
+    [ -n "${a}" ] && [ -n "${b}" ]
+    [ "${a}" = "${b}" ] || {
+        echo "the two agent_get copies differ:"
+        diff <(printf '%s\n' "${a}") <(printf '%s\n' "${b}") || true
+        return 1
+    }
+}
+
+@test "the container parser reads agent.env the same way the host validates it" {
+    # The host accepts an agent.env and the container acts on it, so a disagreement is invisible until
+    # a session starts: `AGENT_BIN=vibe  # the binary` passed every check here and then failed at exec
+    # with a command name that had a comment in it. Each line below is one rule of the format.
+    env_file="${BATS_TEST_TMPDIR}/agent.env"
+    cat >"${env_file}" <<'EOF'
+AGENT_ID=demo
+AGENT_BIN=vibe   # a bare value ends at the first hash
+AGENT_TITLE="Demo # inside quotes it is kept"
+AGENT_HOSTNAME='single # quoted too'
+AGENT_DOMAINS="a.example b.example \
+c.example"
+AGENT_NOTE=bare value with spaces
+EOF
+
+    for key in AGENT_ID AGENT_BIN AGENT_TITLE AGENT_HOSTNAME AGENT_DOMAINS AGENT_NOTE; do
+        host="$(bash -c ". '${REPO_ROOT}/lib/agents.sh'; agent_parse_file '${env_file}' >/dev/null; \
+                         eval \"printf '%s' \\\"\\\${${key}:-}\\\"\"")"
+        container="$(bash -c ". <(sed -n '/^agent_get()/,/^}/p' '${REPO_ROOT}/image/launch.sh'); \
+                              AGENT_ENV_FILE='${env_file}'; agent_get ${key}")"
+        [ "${host}" = "${container}" ] || {
+            echo "${key}: host reads [${host}], the container reads [${container}]"
+            return 1
+        }
+    done
+}
+
+@test "the installer refuses a prefix it would delete" {
+    # The install replaces the prefix wholesale, so `--prefix ~/.local` — one keystroke from
+    # ~/.local/share/docker-code — used to remove that directory and everything in it, and
+    # .install-source then made self-update repeat it.
+    home="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${home}/.local"
+    : >"${home}/.local/precious"
+
+    run env HOME="${home}" "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+        --prefix "${home}/.local" --dir "${BATS_TEST_TMPDIR}/bin"
+    [ "${status}" -ne 0 ]
+    [ -f "${home}/.local/precious" ] || {
+        echo "the installer deleted a directory that was not its own"
+        return 1
+    }
+
+    run env HOME="${home}" "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+        --prefix "${home}" --dir "${BATS_TEST_TMPDIR}/bin"
+    [ "${status}" -ne 0 ]
+    [ -d "${home}" ]
+}
+
+@test "the installer refuses to install over a checkout" {
+    # The hardest one to catch, because a checkout and an installation both hold bin/docker-code —
+    # so the "does it look like ours" test says yes and the rm -rf takes the working tree, .git and
+    # anything uncommitted with it. README.md opens with `git clone … && ./install.sh --local`, so
+    # naming that same directory as the prefix is a short step from what people actually type.
+    home="${BATS_TEST_TMPDIR}/home"
+    checkout="${BATS_TEST_TMPDIR}/checkout"
+    mkdir -p "${home}" "${checkout}/bin" "${checkout}/.git"
+    : >"${checkout}/bin/docker-code"
+    : >"${checkout}/uncommitted"
+
+    run env HOME="${home}" "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+        --prefix "${checkout}" --dir "${BATS_TEST_TMPDIR}/bin"
+    [ "${status}" -ne 0 ]
+    [ -d "${checkout}/.git" ] || {
+        echo "the installer deleted a git working tree"
+        return 1
+    }
+    [ -f "${checkout}/uncommitted" ]
+}
+
+@test "the installer refuses a prefix that contains the source it installs from" {
+    # The prefix is emptied before the copy, so this would delete the tree being read from.
+    home="${BATS_TEST_TMPDIR}/home"
+    box="${BATS_TEST_TMPDIR}/box"
+    mkdir -p "${home}" "${box}/src"
+    cp -R "${REPO_ROOT}/bin" "${REPO_ROOT}/lib" "${REPO_ROOT}/agents" "${box}/src/"
+
+    run env HOME="${home}" "${REPO_ROOT}/install.sh" --local "${box}/src" \
+        --prefix "${box}" --dir "${BATS_TEST_TMPDIR}/bin"
+    [ "${status}" -ne 0 ]
+    [ -d "${box}/src/bin" ]
+}
+
+@test "a relative prefix is refused, since self-update re-runs from elsewhere" {
+    run env HOME="${BATS_TEST_TMPDIR}/home" "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+        --prefix ./relative --dir "${BATS_TEST_TMPDIR}/bin"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"absolute"* ]]
+}
+
+@test "the guard does not stand in the way of installing or reinstalling" {
+    # The other half: a prefix that does not exist yet is fine, and so is one holding a previous
+    # installation — which is the normal case every update goes through.
+    home="${BATS_TEST_TMPDIR}/home"
+    prefix="${home}/.local/share/docker-code"
+    mkdir -p "${home}"
+
+    for _ in 1 2; do
+        run env HOME="${home}" "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+            --prefix "${prefix}" --dir "${BATS_TEST_TMPDIR}/bin"
+        [ "${status}" -eq 0 ] || {
+            echo "${output}"
+            return 1
+        }
+    done
+    [ -f "${prefix}/bin/docker-code" ]
+}

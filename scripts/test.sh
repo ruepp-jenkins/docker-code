@@ -1,5 +1,12 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+# base/Dockerfile, the build context and the report directory are all relative to the repository
+# root, and the report directory is *deleted* below — before the build that would otherwise fail on
+# the wrong directory. Resolve the root first so that deletion cannot land somewhere else.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${ROOT}"
+
 echo "Running tests and exporting the JUnit report"
 
 # Runs the suite inside the base image's build and extracts only the JUnit XML into the workspace,

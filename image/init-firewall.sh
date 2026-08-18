@@ -173,8 +173,25 @@ agent_get() {
     awk -v key="$1" '
         pending != "" { sub(/^[[:space:]]+/, ""); $0 = pending " " $0; pending = "" }
         /\\[[:space:]]*$/ { sub(/[[:space:]]*\\[[:space:]]*$/, ""); pending = $0; next }
-        index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }
-    ' "${AGENT_ENV_FILE}" 2>/dev/null | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+        index($0, key "=") == 1 {
+            value = substr($0, length(key) + 2)
+            sub(/^[[:space:]]+/, "", value)
+            # The same three cases as agent_parse_file in lib/agents.sh, which the host runs over this
+            # very file: a quoted value keeps everything between the quotes, a # included, while a bare
+            # one ends at the first # and loses its trailing space. Stripping only the quotes — which
+            # is what this did — left `AGENT_BIN=vibe  # the binary` as a command name with a comment
+            # in it. The host had already accepted that line, so nothing on that side could catch it
+            # and the failure surfaced at exec, inside the container.
+            if (value ~ /^".*"$/ || value ~ /^\047.*\047$/) {
+                value = substr(value, 2, length(value) - 2)
+            } else {
+                sub(/#.*$/, "", value)
+                sub(/[[:space:]]+$/, "", value)
+            }
+            print value
+            exit
+        }
+    ' "${AGENT_ENV_FILE}" 2>/dev/null
 }
 
 AGENT_ID="$(agent_get AGENT_ID)"

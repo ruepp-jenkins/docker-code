@@ -166,7 +166,7 @@ export DOCKER_CODE_CODEX_LOCAL_MODEL=qwen3:14b
 # ------------------------------------------------------------------------------
 ```
 
-**Per agent instead of flat rate** is the point here. `DOCKER_CODE_LOCAL=1` set globally would also switch Claude Code to the local model - i.e. the exact agent for which you are probably paying a subscription. `DOCKER_CODE_<AGENT>_<KNOPF>` beats `DOCKER_CODE_<KNOPF>` beats the standard, and that applies to **every** switch from the table in the README, not just these two.
+**Per agent instead of flat rate** is the point here. `DOCKER_CODE_LOCAL=1` set globally would also switch Claude Code to the local model - i.e. the exact agent for which you are probably paying a subscription. `DOCKER_CODE_<AGENT>_<KNOB>` beats `DOCKER_CODE_<KNOB>` beats the default, and that applies to **every** switch from the table in the README, not just these two.
 
 If you want it everywhere:
 

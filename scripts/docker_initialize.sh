@@ -1,6 +1,12 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 echo "Initialize docker"
+
+# Named rather than left to set -u, so the message says what is missing. DOCKER_API_PASSWORD is bound
+# by withCredentials around the step that calls this; DOCKER_USERNAME comes from the agent's own
+# environment and is not set anywhere in this repository.
+: "${DOCKER_USERNAME:?DOCKER_USERNAME is not set}"
+: "${DOCKER_API_PASSWORD:?DOCKER_API_PASSWORD is not set (the Jenkinsfile binds it with withCredentials)}"
 
 # shellcheck source=scripts/docker_platforms.sh
 . "$(dirname "$0")/docker_platforms.sh"

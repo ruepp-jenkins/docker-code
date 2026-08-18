@@ -73,6 +73,51 @@ done
 
 die() { echo "install.sh: ERROR: $*" >&2; exit 1; }
 
+# Both the install and the uninstall below do `rm -rf "${PREFIX}"`, and PREFIX is whatever --prefix or
+# DOCKER_CODE_PREFIX said. `--prefix ~/.local` instead of ~/.local/share/docker-code is one keystroke
+# away and would take the whole directory with it — and .install-source records the value, so
+# `docker-code self-update` would repeat it. Nothing else in this file needs a guard; this is the only
+# destructive thing it does.
+check_prefix() {
+    case "${PREFIX}" in
+        "") die "--prefix cannot be empty" ;;
+        */) die "--prefix must not end in a slash: '${PREFIX}'" ;;
+        /*) ;;
+        # Recorded in .install-source and re-run by `docker-code self-update`, which has no reason to
+        # be in the same directory. A relative prefix would resolve somewhere else by then.
+        *) die "--prefix must be an absolute path, not '${PREFIX}'" ;;
+    esac
+    if [ "${PREFIX}" = "/" ] || [ "${PREFIX}" = "${HOME:-}" ]; then
+        die "refusing to use ${PREFIX} as the prefix: installing there would delete it first"
+    fi
+
+    # A checkout is not an installation, however much the test below cannot tell them apart:
+    # bin/docker-code is in both. The README's own first line is `git clone … && ./install.sh
+    # --local`, so `--prefix ~/src/docker-code` is a short step from there — and it would take the
+    # working tree and its whole history with it.
+    if [ -e "${PREFIX}/.git" ]; then
+        die "${PREFIX} is a git working tree, and installing would delete it." \
+            "Keep the checkout and install elsewhere, e.g. --prefix ${HOME:-/opt}/.local/share/docker-code"
+    fi
+
+    # The prefix is emptied before the copy, so a source inside it would be deleted on the way — and
+    # the copy would then have nothing to read.
+    if [ -n "${SOURCE:-}" ]; then
+        case "${SOURCE}/" in
+            "${PREFIX}/"*)
+                die "the source ${SOURCE} is inside the prefix ${PREFIX}, which is emptied before" \
+                    "the copy. Name a different --prefix." ;;
+        esac
+    fi
+
+    # An absent directory is fine — it is about to be created. An existing one has to look like ours.
+    if [ -e "${PREFIX}" ] &&
+        [ ! -f "${PREFIX}/.install-source" ] && [ ! -f "${PREFIX}/bin/docker-code" ]; then
+        die "${PREFIX} exists and is not a docker-code installation, and this would delete it." \
+            "Name a new or empty directory with --prefix."
+    fi
+}
+
 # The names to link are read from the tree being installed, not from a list in here. That is what
 # makes an eighth agent appear after `git pull` without an installer change.
 wrapper_names() {
@@ -92,6 +137,7 @@ wrapper_names() {
 # Uninstall
 # ---------------------------------------------------------------------------------------------
 if [ "${MODE}" = "uninstall" ]; then
+    check_prefix
     removed=0
 
     if [ -d "${PREFIX}" ]; then
@@ -173,6 +219,7 @@ grep -q 'DOCKER_CODE_HOME' "${SOURCE}/bin/docker-code" || die "bin/docker-code i
 # ---------------------------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------------------------
+check_prefix
 mkdir -p "${INSTALL_DIR}" || die "cannot create ${INSTALL_DIR}"
 mkdir -p "$(dirname "${PREFIX}")" || die "cannot create $(dirname "${PREFIX}")"
 

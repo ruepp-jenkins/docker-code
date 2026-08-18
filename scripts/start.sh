@@ -1,20 +1,27 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+# The build context is the repository root and so are the Dockerfile paths, the metadata file and the
+# digest file the Jenkinsfile stashes. Half of this script used to reach its siblings through
+# $(dirname "$0") and the other half through a bare `scripts/…`, so it only worked from one directory
+# — true in CI, where checkoutRepo() guarantees it, and a trap for anyone running it by hand.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${ROOT}"
 
 : "${AGENT_ID:?AGENT_ID is not set (use 'base' or an id from agents/)}"
 echo "Starting build workflow for ${AGENT_ID}"
 
 # shellcheck source=scripts/docker_platforms.sh
-. "$(dirname "$0")/docker_platforms.sh"
+. "${ROOT}/scripts/docker_platforms.sh"
 # shellcheck source=scripts/docker_tags.sh
-. "$(dirname "$0")/docker_tags.sh"
+. "${ROOT}/scripts/docker_tags.sh"
 
-scripts/docker_initialize.sh
+"${ROOT}/scripts/docker_initialize.sh"
 
 # The suite lives in the base image's build and gates every agent through the stamp it copies, so it
 # runs once per pipeline rather than once per agent. Building the base is what produces the report.
 if [ "${AGENT_ID}" = "base" ]; then
-    scripts/test.sh
+    "${ROOT}/scripts/test.sh"
 fi
 
 # One image, one architecture — pushed by digest, deliberately without a tag.
@@ -31,7 +38,7 @@ ARCH="${HOST_PLATFORM#linux/}"
 METADATA_FILE="build-metadata-${AGENT_ID}-${ARCH}.json"
 DIGEST_FILE="digest-${AGENT_ID}-${ARCH}.txt"
 
-echo "[${BRANCH_NAME}] Building ${IMAGE_REPO} for ${BASE_TAG} natively on ${HOST_PLATFORM}"
+echo "[${BRANCH_NAME:-local}] Building ${IMAGE_REPO} for ${BASE_TAG} natively on ${HOST_PLATFORM}"
 echo "  Dockerfile: ${DOCKERFILE}"
 [ -z "${BASE_IMAGE_REF}" ] || echo "  FROM:       ${BASE_IMAGE_REF}"
 
@@ -54,7 +61,8 @@ docker buildx build \
 # read one string would undo that. The pattern is anchored on the key, and the result is checked
 # below — a silent empty digest would otherwise surface much later as an unreadable imagetools error.
 DIGEST="$(sed -n 's/.*"containerimage.digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    "${METADATA_FILE}" | head -1)"
+    "${METADATA_FILE}")"
+DIGEST="${DIGEST%%$'\n'*}"
 
 case "${DIGEST}" in
     sha256:*)
