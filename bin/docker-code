@@ -737,6 +737,8 @@ session_network() {
 session_egress() {
     local domains=()
 
+    egress_check_pool
+
     [ -n "${AGENT_DOMAINS}" ] ||
         warn "agents/${AGENT_ID}/agent.env names no AGENT_DOMAINS, so ${AGENT_TITLE} will not reach" \
              "its own API through the gateway"

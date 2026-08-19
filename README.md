@@ -143,6 +143,7 @@ that every agent shares, so a per-agent spelling would promise something it coul
 |---|---|---|
 | `DOCKER_CODE_REGISTRY_SUBNET` | `172.30.30.0/24` | range of the registry mirror's network; empty hands the choice to Docker |
 | `DOCKER_CODE_MODELS_SUBNET` | `172.30.31.0/24` | range of the local-model network; empty hands the choice to Docker |
+| `DOCKER_CODE_EGRESS_POOL` | *(empty)* | base `/24` the eleven gateway networks are carved from; empty hands the choice to Docker |
 | `DOCKER_CODE_REGISTRY_NETWORK` | `docker-code-mirror` | name of that network |
 | `DOCKER_CODE_MODELS_NETWORK` | `docker-code-net` | name of that network |
 | `DOCKER_CODE_EGRESS_OUT_NETWORK` | `docker-code-egress-out` | the gateways' shared route out |
@@ -162,8 +163,9 @@ them are pinned and can be moved with the variables above; the rest come from Do
 |---|---|---|
 | `docker-code-mirror` | `172.30.30.0/24` | `DOCKER_CODE_REGISTRY_SUBNET` |
 | `docker-code-net` (local models) | `172.30.31.0/24` | `DOCKER_CODE_MODELS_SUBNET` |
-| `docker-code-egress-<agent>`, one per agent | Docker's pool | `default-address-pools`, below |
-| `docker-code-egress-out` | Docker's pool | `default-address-pools`, below |
+| `docker-code-egress-<agent>`, one per agent | Docker's pool | `DOCKER_CODE_EGRESS_POOL` |
+| `docker-code-egress-services` | Docker's pool | `DOCKER_CODE_EGRESS_POOL` |
+| `docker-code-egress-out` | Docker's pool | `DOCKER_CODE_EGRESS_POOL` |
 | the default `bridge` every unfiltered session sits on | `172.17.0.0/16` | `default-address-pools`, below |
 
 The two pinned ones take a CIDR each, and the two cannot be the same range — Docker refuses
@@ -173,6 +175,21 @@ overlapping subnets:
 export DOCKER_CODE_REGISTRY_SUBNET=172.30.120.0/24
 export DOCKER_CODE_MODELS_SUBNET=172.30.121.0/24
 ```
+
+The eleven gateway networks — one per agent, one for the shared-services gateway, one for their route
+out — take a single base instead, because a CIDR each would be eleven variables and Docker refuses two
+networks on the same subnet anyway. It is carved into consecutive `/24`s:
+
+```bash
+export DOCKER_CODE_EGRESS_POOL=172.25.100.0/24
+#   172.25.100.0/24  docker-code-egress-out
+#   172.25.101.0/24  docker-code-egress-claude       (agents in alphabetical order)
+#   …
+#   172.25.110.0/24  docker-code-egress-services
+```
+
+`docker-code egress status` shows which are up. Adding an agent shifts the ones after it, which costs
+nothing: a gateway network is created with the session and removed with the last one.
 
 An empty value hands that network back to Docker's pool. A changed range applies the next time the
 network is created: docker-code removes and recreates it, and says so when a running session is still

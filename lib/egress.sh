@@ -35,10 +35,85 @@ EGRESS_OUT_NETWORK="${DOCKER_CODE_EGRESS_OUT_NETWORK:-docker-code-egress-out}"
 # The id used for the gateway that fronts the shared services rather than an agent.
 EGRESS_SERVICES_ID="services"
 
-# Deliberately no fixed subnet, unlike the mirror's 172.30.30.0/24 and the model network's
-# 172.30.31.0/24. Those were pinned so they could be named in a route or a corporate firewall
-# exception; an internal network has no route out, so there is nothing to name — and reserving a
-# range per agent to say so would burn nine /24s for no reader.
+# The pool the egress networks are carved from.
+#
+# One setting rather than one per network, because there are eleven of them — one per agent, one for
+# the shared-services gateway, one for the gateways' route out — and a single CIDR cannot serve them
+# all: Docker refuses two networks on the same subnet. A base /24 is carved into consecutive /24s by
+# a stable index instead, so moving every gateway off a range that collides with the host's LAN is
+# one variable rather than eleven.
+#
+# Empty is the default, and means what this file always did: Docker allocates from its own pool. That
+# pool is a daemon setting (`default-address-pools` in daemon.json) and governs the default bridge and
+# every other project on the machine too, which is usually the better place to fix a collision. This
+# exists so that the answer is not "every network but these".
+#
+# An internal network has no route out, so its range is not something to name in a route — but Docker
+# still adds a host route for it, which is exactly how a /16 handed to a gateway swallows a LAN.
+EGRESS_POOL="${DOCKER_CODE_EGRESS_POOL-}"
+
+# Every network id this file can create, in the order they are carved from the pool: the route out
+# first, then the agents in the order lib/agents.sh reports them, then the services gateway. Sorted
+# and therefore stable — an agent added later shifts the ones after it, which costs nothing because a
+# gateway network is created per session and removed with the last one.
+#
+# agent_ids comes from lib/agents.sh, which bin/docker-code sources before this file.
+egress_network_ids() {
+    printf 'out\n'
+    agent_ids
+    printf '%s\n' "${EGRESS_SERVICES_ID}"
+}
+
+# egress_check_pool — shape only, like mirror_check_subnet. Whether the range is usable here is
+# Docker's judgement, and its message about an overlap says more than anything this could work out.
+egress_check_pool() {
+    [ -n "${EGRESS_POOL}" ] || return 0
+
+    case "${EGRESS_POOL}" in
+        *[!0-9./]*|*/*/*|*/)
+            die "DOCKER_CODE_EGRESS_POOL must be an IPv4 CIDR like 172.25.100.0/24, not" \
+                "'${EGRESS_POOL}'" ;;
+        */24) ;;
+        */*) die "DOCKER_CODE_EGRESS_POOL is carved into /24s, so its base must be one:" \
+                 "'${EGRESS_POOL%/*}/24' rather than '${EGRESS_POOL}'" ;;
+        *) die "DOCKER_CODE_EGRESS_POOL needs a prefix length: '${EGRESS_POOL}/24'" ;;
+    esac
+
+    local a b c count last
+    IFS=. read -r a b c _ <<EOF
+${EGRESS_POOL%/*}
+EOF
+    count="$(egress_network_ids | grep -c .)"
+    last=$((c + count - 1))
+    if [ "${last}" -gt 255 ]; then
+        die "DOCKER_CODE_EGRESS_POOL=${EGRESS_POOL} leaves room for $((256 - c)) networks, and there" \
+            "are ${count} to place. Start lower, e.g. ${a}.${b}.$((c > count ? c - count : 0)).0/24."
+    fi
+}
+
+# egress_subnet_for <id> — the /24 this network takes out of the pool, or nothing when no pool is set
+# and Docker is left to choose.
+egress_subnet_for() {
+    local want="$1" id index=0 a b c
+
+    [ -n "${EGRESS_POOL}" ] || return 0
+
+    IFS=. read -r a b c _ <<EOF
+${EGRESS_POOL%/*}
+EOF
+
+    while IFS= read -r id; do
+        [ -n "${id}" ] || continue
+        if [ "${id}" = "${want}" ]; then
+            printf '%s.%s.%s.0/24\n' "${a}" "${b}" "$((c + index))"
+            return 0
+        fi
+        index=$((index + 1))
+    done <<EOF
+$(egress_network_ids)
+EOF
+    return 0
+}
 
 # The three lists below are assembled into one allowlist by session_egress in bin/docker-code, which
 # is the only consumer — hence the disables; they are the interface of this file, not dead weight.
@@ -392,10 +467,15 @@ egress_write_config() {
 # running, and let the last session out turn off the light. The one difference that matters is that
 # a failure here is *not* degradable — see egress_start.
 # ---------------------------------------------------------------------------------------------
+# egress_create_network <id>
 egress_create_network() {
-    local name="$1" err
-    egress_network_create=(docker network create --internal
-        --label "${EGRESS_LABEL}=egress" "${name}")
+    local id="$1" name subnet err
+    name="$(egress_network "${id}")"
+    subnet="$(egress_subnet_for "${id}")"
+
+    egress_network_create=(docker network create --internal)
+    [ -z "${subnet}" ] || egress_network_create+=(--subnet "${subnet}")
+    egress_network_create+=(--label "${EGRESS_LABEL}=egress" "${name}")
 
     err="$("${egress_network_create[@]}" 2>&1 >/dev/null)" && return 0
 
@@ -405,19 +485,64 @@ egress_create_network() {
     return 1
 }
 
-egress_ensure_network() {
-    local name="$1"
+# egress_network_subnet_matches <name> <wanted>
+#
+# Space separated and matched with the separators, for the reason models_ensure_network gives: a
+# substring match would find 172.25.100.0/2 inside 172.25.100.0/24.
+egress_network_subnet_matches() {
+    local current
+    current=" $(docker network inspect \
+        -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$1" 2>/dev/null || true) "
+    case "${current}" in
+        *" $2 "*) return 0 ;;
+    esac
+    return 1
+}
 
-    docker network inspect "${name}" >/dev/null 2>&1 && return 0
-    egress_create_network "${name}"
+# egress_ensure_network <id>
+egress_ensure_network() {
+    local id="$1" name subnet
+    name="$(egress_network "${id}")"
+    subnet="$(egress_subnet_for "${id}")"
+
+    if ! docker network inspect "${name}" >/dev/null 2>&1; then
+        egress_create_network "${id}"
+        return
+    fi
+
+    # A subnet is fixed when the network is created, so a changed pool means a new network. Same
+    # handling as the mirror and the model network: rebuild it between sessions, and leave it alone
+    # while one is attached rather than cutting that session off mid-run.
+    [ -n "${subnet}" ] || return 0
+    egress_network_subnet_matches "${name}" "${subnet}" && return 0
+
+    if ! docker network rm "${name}" >/dev/null 2>&1; then
+        warn "the ${name} network is in use, so it keeps the subnet it was created with;"
+        warn "${subnet} applies once the last session on it has ended"
+        return 0
+    fi
+    egress_create_network "${id}"
 }
 
 # The gateways' shared route out. Not internal, obviously, and created separately so that an
 # `--internal` typo can never accidentally apply to it.
 egress_ensure_out_network() {
-    docker network inspect "${EGRESS_OUT_NETWORK}" >/dev/null 2>&1 && return 0
+    local subnet
+    subnet="$(egress_subnet_for out)"
 
-    egress_out_create=(docker network create --label "${EGRESS_LABEL}=egress-out" "${EGRESS_OUT_NETWORK}")
+    if docker network inspect "${EGRESS_OUT_NETWORK}" >/dev/null 2>&1; then
+        [ -n "${subnet}" ] && ! egress_network_subnet_matches "${EGRESS_OUT_NETWORK}" "${subnet}" || return 0
+        if ! docker network rm "${EGRESS_OUT_NETWORK}" >/dev/null 2>&1; then
+            warn "the ${EGRESS_OUT_NETWORK} network is in use, so it keeps the subnet it was created"
+            warn "with; ${subnet} applies once the last gateway on it has stopped"
+            return 0
+        fi
+    fi
+
+    egress_out_create=(docker network create)
+    [ -z "${subnet}" ] || egress_out_create+=(--subnet "${subnet}")
+    egress_out_create+=(--label "${EGRESS_LABEL}=egress-out" "${EGRESS_OUT_NETWORK}")
+
     "${egress_out_create[@]}" >/dev/null 2>&1 && return 0
     docker network inspect "${EGRESS_OUT_NETWORK}" >/dev/null 2>&1
 }
@@ -457,7 +582,7 @@ egress_start() {
         return 1
     }
 
-    egress_ensure_network "${network}" || return 1
+    egress_ensure_network "${id}" || return 1
     egress_ensure_out_network || return 1
 
     # The allowlist is regenerated every start, so a gateway that is already running is holding an

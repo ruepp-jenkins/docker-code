@@ -250,6 +250,7 @@ instead. Both live in one ruleset — domains and IPs together.
 | `DOCKER_CODE_EGRESS_PORT` | `3128` | the port the gateway listens on |
 | `DOCKER_CODE_EGRESS_HOME` | `~/docker-code/egress` | where the generated allowlists live |
 | `DOCKER_CODE_EGRESS_OUT_NETWORK` | `docker-code-egress-out` | the gateways' shared route out |
+| `DOCKER_CODE_EGRESS_POOL` | *(empty)* | base `/24` every gateway network is carved from, one `/24` each; empty leaves the choice to Docker. See [Network ranges](../README.md#network-ranges) |
 | `DOCKER_CODE_REGISTRY_EGRESS` | `1` | the registry mirror's own upstream fetch: `1` via the services gateway, `0` direct, or a proxy URL |
 | `DOCKER_CODE_MODELS_EGRESS` | `1` | the same for Ollama's model pulls |
 

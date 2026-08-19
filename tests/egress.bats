@@ -824,3 +824,93 @@ EOF
         return 1
     }
 }
+
+# ---------------------------------------------------------------------------------------------
+# The address pool
+# ---------------------------------------------------------------------------------------------
+
+# Source the two libraries the way bin/docker-code does, since the carve-up reads the agent list.
+pool_eval() {
+    run bash -c "
+        DOCKER_CODE_ROOT='${REPO_ROOT}'
+        warn() { :; }
+        die() { echo \"REFUSED: \$*\" >&2; exit 1; }
+        . '${REPO_ROOT}/lib/agents.sh'
+        export DOCKER_CODE_EGRESS_POOL='$1'
+        . '${REPO_ROOT}/lib/egress.sh'
+        $2
+    "
+}
+
+@test "every network the gateways use gets its own /24 out of the pool" {
+    # Eleven of them — one per agent, the services gateway, and the shared route out — and Docker
+    # refuses two networks on the same subnet, so a collision here is a session that will not start.
+    pool_eval 172.25.100.0/24 'egress_check_pool
+        egress_network_ids | while read -r id; do egress_subnet_for "${id}"; done'
+    [ "${status}" -eq 0 ] || { echo "${output}"; return 1; }
+
+    local total distinct
+    total="$(printf '%s\n' "${output}" | grep -c .)"
+    distinct="$(printf '%s\n' "${output}" | sort -u | grep -c .)"
+    [ "${total}" -eq "${distinct}" ] || {
+        echo "two networks were given the same subnet:"
+        printf '%s\n' "${output}" | sort | uniq -d
+        return 1
+    }
+
+    # Every agent has one, or an agent added later would silently fall back to Docker's pool while
+    # the rest are pinned.
+    for id in $(all_agent_ids); do
+        pool_eval 172.25.100.0/24 "egress_subnet_for ${id}"
+        [[ "${output}" =~ ^172\.25\.1[0-9]+\.0/24$ ]] || {
+            echo "agent ${id} got '${output}' out of the pool"
+            return 1
+        }
+    done
+}
+
+@test "no pool is the default, and it leaves the docker command exactly as it was" {
+    # The knob exists for hosts whose LAN collides with Docker's own pool. Everyone else must see no
+    # change at all, so the unset case has to produce the same argv it always did.
+    pool_eval '' 'egress_subnet_for codex; egress_subnet_for out; echo "[end]"'
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "[end]" ] || {
+        echo "an unset pool produced a subnet: ${output}"
+        return 1
+    }
+}
+
+@test "a pool that is not a /24, or has no room for every network, is refused" {
+    # Refused rather than truncated: a pool that runs out part-way would pin some gateways and leave
+    # the rest on the range the user is trying to get away from.
+    for bad in 172.25.100.0/16 172.25.100.0 not-an-ip 172.25.250.0/24; do
+        pool_eval "${bad}" 'egress_check_pool'
+        [ "${status}" -ne 0 ] || {
+            echo "DOCKER_CODE_EGRESS_POOL=${bad} was accepted"
+            return 1
+        }
+    done
+
+    # And the message says what to do about the one that is only slightly wrong.
+    pool_eval 172.25.250.0/24 'egress_check_pool'
+    [[ "${output}" == *"Start lower"* ]]
+}
+
+@test "the pool reaches docker network create, and the route out is still not internal" {
+    make_stub docker 'case "$*" in *"network inspect"*) exit 1 ;; esac'
+    pool_eval 172.25.100.0/24 'egress_ensure_network codex; egress_ensure_out_network'
+    [ "${status}" -eq 0 ]
+
+    local calls
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"--internal --subnet 172.25.102.0/24"*"docker-code-egress-codex"* ]] || {
+        echo "the agent gateway network was not pinned: ${calls}"
+        return 1
+    }
+    # The route out is the one network here that must keep a way off the host.
+    printf '%s\n' "${calls}" | grep 'docker-code-egress-out' | grep -q -- '--internal' && {
+        echo "the route out was created --internal, which would cut every gateway off"
+        return 1
+    }
+    printf '%s\n' "${calls}" | grep 'docker-code-egress-out' | grep -q -- '--subnet 172.25.100.0/24'
+}
