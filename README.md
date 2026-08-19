@@ -107,6 +107,9 @@ DOCKER_CODE_SHELL=1 opencode-docker           # Inspect the container
 DOCKER_CODE_DRY_RUN=1 qwen-docker             # Show what would happen
 ```
 
+Settings that are not per-agent — the shared networks and their address ranges — are in
+[Global settings](#global-settings) below.
+
 ### Permanent, in the `.bashrc`
 
 `DOCKER_CODE_<AGENT>_<SETTING>` overrides `DOCKER_CODE_<SETTING>`, which overrides the default. This applies to every setting in the table:
@@ -127,6 +130,69 @@ Check without starting anything:
 ```bash
 DOCKER_CODE_DRY_RUN=1 qwen-docker
 ```
+
+---
+
+## Global settings
+
+Everything in the table above is per-agent — each entry also has a `DOCKER_CODE_<AGENT>_<SETTING>`
+form. The variables here are **not**, and deliberately so: they govern the networks and containers
+that every agent shares, so a per-agent spelling would promise something it could not deliver.
+
+| variable | default | effect |
+|---|---|---|
+| `DOCKER_CODE_REGISTRY_SUBNET` | `172.30.30.0/24` | range of the registry mirror's network; empty hands the choice to Docker |
+| `DOCKER_CODE_MODELS_SUBNET` | `172.30.31.0/24` | range of the local-model network; empty hands the choice to Docker |
+| `DOCKER_CODE_REGISTRY_NETWORK` | `docker-code-mirror` | name of that network |
+| `DOCKER_CODE_MODELS_NETWORK` | `docker-code-net` | name of that network |
+| `DOCKER_CODE_EGRESS_OUT_NETWORK` | `docker-code-egress-out` | the gateways' shared route out |
+| `DOCKER_CODE_HOME` | `~/docker-code` | where all state lives |
+
+The rest of the shared-service settings — images, ports, GPU, upstreams, credentials — are documented
+where they apply: [REGISTRY.md](docs/REGISTRY.md), [LOCAL-MODELS.md](docs/LOCAL-MODELS.md) and
+[EGRESS.md](docs/EGRESS.md).
+
+### Network ranges
+
+docker-code creates its own Docker networks, and on a host whose LAN already uses part of `172.16/12`
+they can collide — Docker then routes those addresses to a bridge instead of to your network. Two of
+them are pinned and can be moved with the variables above; the rest come from Docker's own pool.
+
+| network | subnet | how to move it |
+|---|---|---|
+| `docker-code-mirror` | `172.30.30.0/24` | `DOCKER_CODE_REGISTRY_SUBNET` |
+| `docker-code-net` (local models) | `172.30.31.0/24` | `DOCKER_CODE_MODELS_SUBNET` |
+| `docker-code-egress-<agent>`, one per agent | Docker's pool | `default-address-pools`, below |
+| `docker-code-egress-out` | Docker's pool | `default-address-pools`, below |
+| the default `bridge` every unfiltered session sits on | `172.17.0.0/16` | `default-address-pools`, below |
+
+The two pinned ones take a CIDR each, and the two cannot be the same range — Docker refuses
+overlapping subnets:
+
+```bash
+export DOCKER_CODE_REGISTRY_SUBNET=172.30.120.0/24
+export DOCKER_CODE_MODELS_SUBNET=172.30.121.0/24
+```
+
+An empty value hands that network back to Docker's pool. A changed range applies the next time the
+network is created: docker-code removes and recreates it, and says so when a running session is still
+attached, in which case the change lands once the last one has ended.
+
+Everything else — the per-agent gateways, their shared route out, and the default bridge — is
+allocated by the daemon, not by docker-code, so it is a daemon setting. In `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "172.30.128.0/17", "size": 24 }
+  ]
+}
+```
+
+That gives Docker 128 /24s starting at `172.30.128.0` and takes it out of whatever your LAN uses.
+It needs a `systemctl restart docker`, and it only applies to networks created afterwards — existing
+ones keep the range they were built with until they are removed. This one setting is usually the
+whole fix, because it also moves the default bridge, which docker-code has no say over.
 
 ---
 

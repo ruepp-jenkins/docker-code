@@ -393,3 +393,47 @@ EOF
     done
     [ -f "${prefix}/bin/docker-code" ]
 }
+
+@test "the global settings table documents variables that really are global" {
+    # The per-agent table has its own check above. This is the other half: anything listed as global
+    # must not be resolved with agent_knob, or the README would be denying a per-agent form that
+    # actually works — and it must be read somewhere, or the table documents nothing.
+    vars="$(sed -n '/^## Global settings/,/^## Environment variables/p' "${REPO_ROOT}/README.md" |
+        grep -oE '`DOCKER_CODE_[A-Z_]+`' | tr -d '`' | sort -u)"
+    [ -n "${vars}" ]
+
+    for var in ${vars}; do
+        grep -rq -- "${var}" "${REPO_ROOT}"/lib/*.sh "${REPO_ROOT}/bin/docker-code" || {
+            echo "README documents ${var}, but nothing reads it"
+            return 1
+        }
+        knob="${var#DOCKER_CODE_}"
+        if grep -qE "agent_knob ${knob}[ \"]" "${REPO_ROOT}/bin/docker-code"; then
+            echo "${var} is resolved with agent_knob, so it does have a per-agent form"
+            echo "and belongs in the Configuration table instead of the global one"
+            return 1
+        fi
+    done
+}
+
+@test "the documented network ranges are the ones the code defaults to" {
+    # The whole point of pinning a range is that it can be named in a route or a firewall exception,
+    # so a README that says 172.30.30.0/24 while the code says something else is worse than no
+    # documentation at all.
+    for pair in "DOCKER_CODE_REGISTRY_SUBNET:lib/mirror.sh" "DOCKER_CODE_MODELS_SUBNET:lib/models.sh"; do
+        var="${pair%%:*}"
+        file="${pair##*:}"
+
+        code="$(sed -n "s/.*\${${var}-\([^}]*\)}.*/\1/p" "${REPO_ROOT}/${file}" | head -n 1)"
+        [ -n "${code}" ] || {
+            echo "${var} is no longer read with a default in ${file}"
+            return 1
+        }
+
+        grep -qF "| \`${var}\` | \`${code}\` |" "${REPO_ROOT}/README.md" || {
+            echo "${file} defaults ${var} to ${code}, which is not what the README's table says:"
+            grep -F "\`${var}\`" "${REPO_ROOT}/README.md" || true
+            return 1
+        }
+    done
+}
