@@ -437,3 +437,35 @@ EOF
         }
     done
 }
+
+@test "the project states a licence, and the README points at it" {
+    # Without one, default copyright applies and nobody may legally use, fork or redistribute this —
+    # while README.md's first instruction is to clone it and the images are published for anyone to
+    # pull.
+    [ -f "${REPO_ROOT}/LICENSE" ]
+    grep -q 'MIT License' "${REPO_ROOT}/LICENSE"
+    grep -qE 'Copyright \(c\) [0-9]{4}' "${REPO_ROOT}/LICENSE"
+    grep -q '(LICENSE)' "${REPO_ROOT}/README.md"
+}
+
+@test "doctor reports the range every docker-code network is running on" {
+    # A range that collides with the host's LAN is a first-class failure here and three settings
+    # govern it, so there has to be one command that says what is actually in effect. Finding out
+    # used to mean `docker network ls` piped into `docker network inspect` by hand.
+    block="$(sed -n '/^doctor_networks()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [ -n "${block}" ]
+
+    # Every network docker-code can create has to be reachable from it.
+    for want in MIRROR_NETWORK MODELS_NETWORK EGRESS_OUT_NETWORK egress_network EGRESS_SERVICES_ID; do
+        [[ "${block}" == *"${want}"* ]] || {
+            echo "doctor_networks never looks at ${want}"
+            return 1
+        }
+    done
+
+    # And it reports the running subnet, not the configured one — they come apart exactly when
+    # someone is trying to work out why a setting appears to do nothing.
+    row="$(sed -n '/^doctor_network_row()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [[ "${row}" == *"docker network inspect"*".IPAM.Config"* ]]
+    [[ "${row}" == *"applies once this network is recreated"* ]]
+}

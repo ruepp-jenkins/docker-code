@@ -299,3 +299,10 @@ bats tests/            # Entire suite, without a Docker daemon
 The suite runs in the `test` stage of `base/Dockerfile`, and `verified` refuses the image when it is red. Every agent image copies this stamp - so a red test blocks every agent, not just the one whose Dockerfile was currently touched.
 
 This is possible thanks to the dry run seam: everything `bin/docker-code` does before the start is pure command construction, i.e. a function from the environment to an argv — testable without a daemon.
+
+---
+
+## License
+
+[MIT](LICENSE). The agents themselves are not covered by it: each is its vendor's software, installed
+into an image at build time and governed by that vendor's own terms.

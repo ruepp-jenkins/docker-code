@@ -1058,10 +1058,83 @@ cmd_doctor() {
     done
     echo
 
+    doctor_networks
+    echo
+
     echo "local models:"
     models_status | sed 's/^/  /'
 
     return "${rc}"
+}
+
+# doctor_network_row <name> <wanted-subnet> <knob>
+#
+# The running subnet, not the configured one. Those come apart in the case that actually costs people
+# an afternoon: a range is set, the network already existed, and the setting therefore describes
+# something that is not in effect yet.
+doctor_network_row() {
+    local name="$1" want="$2" knob="$3" actual note
+
+    actual="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' \
+        "${name}" 2>/dev/null || true)"
+    actual="$(printf '%s' "${actual}" | tr -s ' ' | sed 's/ *$//')"
+
+    if [ -z "${actual}" ]; then
+        printf '  %-30s %-18s %s\n' "${name}" "not created" "${knob}"
+        return 0
+    fi
+
+    if [ -z "${want}" ]; then
+        note="${knob} unset — Docker chose this"
+    elif [ "${actual}" != "${want}" ]; then
+        note="${knob}=${want} applies once this network is recreated"
+    else
+        note="${knob}"
+    fi
+    printf '  %-30s %-18s %s\n' "${name}" "${actual}" "${note}"
+}
+
+# Every network docker-code can create, with the range it is actually running on.
+#
+# There was no single command for this, which is the whole reason it exists: a range that collides
+# with the host's LAN is a first-class failure here, three settings govern it, and finding out what
+# was in effect meant `docker network ls` piped into `docker network inspect` by hand.
+#
+# The two pinned networks are always listed, because "not created" is itself the answer when someone
+# is wondering why DOCKER_CODE_REGISTRY_SUBNET appears to do nothing. The eleven gateway networks are
+# listed only when they exist — they come and go with sessions, and eleven "not created" lines would
+# bury the two that matter.
+doctor_networks() {
+    echo "networks:"
+
+    doctor_network_row "${MIRROR_NETWORK}" "${MIRROR_SUBNET}" DOCKER_CODE_REGISTRY_SUBNET
+    doctor_network_row "${MODELS_NETWORK}" "${MODELS_SUBNET}" DOCKER_CODE_MODELS_SUBNET
+
+    # A malformed pool would otherwise surface as a nonsense subnet in the rows below. Reported in a
+    # subshell so that egress_check_pool's die ends the check rather than the whole command: doctor
+    # is the thing you run *because* something is wrong.
+    if [ -n "${EGRESS_POOL}" ] && ! ( egress_check_pool ) 2>/dev/null; then
+        printf '  %-30s %s\n' "(egress pool)" "DOCKER_CODE_EGRESS_POOL=${EGRESS_POOL} is not usable"
+        ( egress_check_pool ) 2>&1 >/dev/null | sed 's/^/    /'
+        return 0
+    fi
+
+    local id name shown=0
+    for id in out $(agent_ids) "${EGRESS_SERVICES_ID}"; do
+        if [ "${id}" = "out" ]; then
+            name="${EGRESS_OUT_NETWORK}"
+        else
+            name="$(egress_network "${id}")"
+        fi
+        docker network inspect "${name}" >/dev/null 2>&1 || continue
+        doctor_network_row "${name}" "$(egress_subnet_for "${id}")" DOCKER_CODE_EGRESS_POOL
+        shown=1
+    done
+
+    if [ "${shown}" = "0" ]; then
+        printf '  %-30s %s\n' "docker-code-egress-*" \
+            "none running (DOCKER_CODE_EGRESS_POOL ${EGRESS_POOL:-unset})"
+    fi
 }
 
 cmd_models() {

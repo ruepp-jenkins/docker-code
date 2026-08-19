@@ -214,3 +214,71 @@ JENKINSFILE="${BATS_TEST_DIRNAME}/../Jenkinsfile"
         }
     done
 }
+
+# ---------------------------------------------------------------------------------------------
+# scripts/docker_platforms.sh
+#
+# The only file under scripts/ nothing exercised, and the one that decides which architecture a
+# build targets. Its own comment says what a wrong answer costs: both agents build the same
+# architecture, the manifest list claims a platform it does not carry, and nobody finds out until a
+# user pulls it.
+# ---------------------------------------------------------------------------------------------
+
+# Sourced in a subshell, so the script's `exit 1` becomes a status here instead of ending the test.
+platforms() {
+    local arch="$1"
+    shift
+    make_stub docker "echo ${arch}"
+    run bash -c "$* ( . '${REPO_ROOT}/scripts/docker_platforms.sh' && \
+        echo \"resolved=\${RESOLVED_PLATFORMS} host=\${HOST_PLATFORM} foreign=[\${FOREIGN_PLATFORMS}]\" ) || exit 3"
+}
+
+@test "the host architecture is asked of Docker, not assumed to be amd64" {
+    # On an arm64 agent a hard-coded default would quietly emulate the entire build — the exact cost
+    # this file exists to avoid.
+    platforms arm64 ''
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"host=linux/arm64"* ]]
+    [[ "${output}" == *"resolved=linux/arm64"* ]]
+}
+
+@test "the default builds for this machine only, so nothing is emulated" {
+    platforms amd64 ''
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"resolved=linux/amd64"* ]]
+    # Empty is what tells docker_initialize.sh to skip the privileged QEMU container.
+    [[ "${output}" == *"foreign=[]"* ]]
+}
+
+@test "a foreign platform in the list is what turns the QEMU registration on" {
+    platforms amd64 'export DOCKER_PLATFORMS=linux/amd64,linux/arm64;'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"resolved=linux/amd64,linux/arm64"* ]]
+    [[ "${output}" == *"foreign=[linux/arm64]"* ]]
+
+    # The host's own platform is never foreign to itself, however it is spelled in the list.
+    [[ "${output}" != *"foreign=[linux/amd64"* ]]
+}
+
+@test "a mislabelled build agent is caught before it builds the wrong architecture" {
+    # The pipeline pins each agent to an architecture by label, and a label is a promise a human
+    # made. When it is wrong nothing else would fail — both agents would build the same thing.
+    platforms amd64 'export EXPECTED_PLATFORM=linux/arm64;'
+    [ "${status}" -eq 3 ]
+    [[ "${output}" == *"expected linux/arm64"* ]]
+    # The message has to name what to go and look at.
+    [[ "${output}" == *"oracle_docker"* ]]
+}
+
+@test "the matching label passes without comment" {
+    platforms arm64 'export EXPECTED_PLATFORM=linux/arm64;'
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"host=linux/arm64"* ]]
+}
+
+@test "an unreachable daemon stops the build rather than guessing an architecture" {
+    make_stub docker 'exit 1'
+    run bash -c "( . '${REPO_ROOT}/scripts/docker_platforms.sh' ) || exit 3"
+    [ "${status}" -eq 3 ]
+    [[ "${output}" == *"could not ask Docker"* ]]
+}
