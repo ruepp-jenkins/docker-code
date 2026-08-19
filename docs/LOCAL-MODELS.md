@@ -299,6 +299,7 @@ Four buttons, all for the Ollama container, all effective on the `models up`:
 | `DOCKER_CODE_OLLAMA_IMAGE` | `ollama/ollama:<version>-rocm` | a specific image instead of `:rocm` |
 | `DOCKER_CODE_OLLAMA_ENV` | `"HSA_OVERRIDE_GFX_VERSION=11.0.0"` | Environment **in** Ollama daemon, separated by spaces |
 | `DOCKER_CODE_OLLAMA_ARGS` | `"--security-opt seccomp=unconfined"` | any other `docker run` arguments |
+| `DOCKER_CODE_MODELS_SUBNET` | `172.30.31.0/24` | the model network's range; empty leaves the choice to Docker. See [Network ranges](../README.md#network-ranges) |
 
 A complete block for the `.bashrc`, here for an RX 6700 XT:
 
