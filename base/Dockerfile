@@ -172,7 +172,7 @@ COPY scripts/ scripts/
 COPY ai/ ai/
 COPY docs/ docs/
 COPY base/Dockerfile base/Dockerfile
-COPY Jenkinsfile install.sh README.md AGENTS.md CLAUDE.md GEMINI.md QWEN.md ./
+COPY Jenkinsfile install.sh LICENSE README.md AGENTS.md CLAUDE.md GEMINI.md QWEN.md ./
 
 # The report is written whether or not the suite passes, and the exit code is kept beside it. That
 # split is what lets `--target test-results` publish a red report while `verified` below stops the

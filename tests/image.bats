@@ -81,12 +81,50 @@ BASE_DOCKERFILE="${BATS_TEST_DIRNAME}/../base/Dockerfile"
     grep -q 'COPY --from=verified /verified.stamp' "${BASE_DOCKERFILE}"
 }
 
+# Every repository path the suite reads: the literal part of each reference below REPO_ROOT or
+# below the test directory's parent, cut at the first variable so that a computed name drops out.
+suite_repo_paths() {
+    grep -rhoE '\$\{(REPO_ROOT|BATS_TEST_DIRNAME)\}"?/[^"'"'"'`) ;,]*' \
+        "${REPO_ROOT}"/tests/*.bats "${REPO_ROOT}"/tests/helper.bash |
+        sed -e 's|^\${REPO_ROOT}"\?/||' \
+            -e 's|^\${BATS_TEST_DIRNAME}"\?/\.\.||' \
+            -e 's|^/||' \
+            -e 's|\$.*||' |
+        grep -v '^$' | sort -u
+}
+
 @test "the test stage copies everything the suite reads" {
-    for path in tests/ image/ bin/ lib/ agents/ scripts/ ai/ docs/; do
-        grep -q "COPY ${path}" "${BASE_DOCKERFILE}" || {
-            echo "base/Dockerfile's test stage does not copy ${path}"; return 1
-        }
+    # The container the suite runs in holds nothing but these COPY lines, so a test that reads a file
+    # nobody copied passes in a checkout and fails only in CI. Deriving the list from the tests
+    # themselves is what catches the next file added at the repository root: LICENSE was the last
+    # one, and it broke the build rather than the checkout it was committed from.
+    copies="$(sed -n '/^FROM .* AS test$/,/^FROM .* AS test-results$/p' "${BASE_DOCKERFILE}" |
+        sed -n 's/^COPY //p')"
+    [ -n "${copies}" ]
+
+    # The suite reads its own directory through $BATS_TEST_DIRNAME, which names no path to check.
+    copied="tests/"
+    for src in ${copies}; do
+        case "${src}" in
+            --*|./) continue ;;
+        esac
+        copied="${copied} ${src}"
     done
+
+    while IFS= read -r path; do
+        found=""
+        for src in ${copied}; do
+            case "${path}" in
+                "${src}"|"${src%/}"|"${src%/}"/*) found=1; break ;;
+            esac
+        done
+        [ -n "${found}" ] || {
+            echo "the suite reads ${path}, which base/Dockerfile's test stage does not copy"
+            return 1
+        }
+    done <<EOF
+$(suite_repo_paths)
+EOF
 }
 
 @test "an agent's smoke test does not leave root-owned files on the mount point" {
