@@ -21,13 +21,27 @@ The suffix `-docker` is intentional: `claude` remains `claude`, `gemini` remains
 ## Installation
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/ruepp-jenkins/docker-code/master/install.sh | bash
+```
+
+One line, one user, no privileges: the tree lands in `~/.local/share/docker-code`, and `docker-code` plus one wrapper per agent are linked into `~/.local/bin`. The installer never calls sudo itself, writes to **no** shell startup file, and creates **no** alias. `git` is the only thing it expects to find.
+
+For every user on the machine — the tree in `/opt/docker-code`, the commands in `/usr/local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ruepp-jenkins/docker-code/master/install.sh | sudo bash -s -- --system
+```
+
+`--system` changes where the installation goes, and nothing else: each user still keeps their own logins, sessions and models in their own `~/docker-code`. It refuses to start rather than half-install when the shell running it cannot write to both paths.
+
+From a checkout — when you want the sources anyway, or when `raw.githubusercontent.com` answers `HTTP 429`:
+
+```bash
 git clone https://github.com/ruepp-jenkins/docker-code.git
 ./docker-code/install.sh --local
 ```
 
-The installer places the tree under `~/.local/share/docker-code` and links `docker-code` plus one wrapper per agent to `~/.local/bin`. It uses **no** sudo, writes to **no** shell startup file, and creates **no** alias.
-
-Fetching goes through git, for installs and for `docker-code self-update` alike. GitHub throttles its archive endpoints — `codeload` and `raw.githubusercontent.com` — separately from the rest of the API and considerably harder, so a download-based installer fails with `HTTP 429` at moments when cloning the same repository works fine. Every machine this runs on has git anyway.
+Only the installer itself travels over `raw.githubusercontent.com`; what it installs is cloned, for installs and for `docker-code self-update` alike. GitHub throttles its archive endpoints — `codeload` and `raw.githubusercontent.com` — separately from the rest of the API and considerably harder, so a download-based installer fails with `HTTP 429` at moments when cloning the same repository works fine. A single 13 KB file is the whole exposure to that, and the clone above avoids even it.
 
 ```bash
 cd ~/my-project
@@ -283,8 +297,11 @@ The tools themselves are installed system-wide in the image, with the auto-updat
 Uninstall without losing state:
 
 ```bash
-install.sh --uninstall        # Remove commands and installation; keep ~/docker-code
+install.sh --uninstall             # Remove commands and installation; keep ~/docker-code
+install.sh --uninstall --system    # The same for an installation made with --system, as root
 ```
+
+`--uninstall` removes what the matching install would have written, so it needs the same `--system` (or the same `--prefix` and `--dir`) that put it there.
 
 ---
 

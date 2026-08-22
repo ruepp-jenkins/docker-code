@@ -140,9 +140,97 @@ EOF
 
 @test "the installer never uses sudo and never edits a shell startup file" {
     # Both are promises made in install.sh's own header, and both are the kind of thing that gets
-    # added in a hurry when a PATH problem shows up.
-    ! grep -q 'sudo' "${REPO_ROOT}/install.sh"
-    ! grep -qE '>>?\s*"?\$\{?HOME\}?/\.(bashrc|zshrc|profile)' "${REPO_ROOT}/install.sh"
+    # added in a hurry when a PATH problem shows up — --system in particular, which does write to
+    # /opt and /usr/local/bin and asks the caller to be root rather than arranging that itself.
+    #
+    # Written as if-blocks, not as `! grep`: errexit does not act on an inverted command, so a bare
+    # `! grep -q ...` line cannot fail a bats test unless it happens to be the last one. The first
+    # of these two assertions was dead for exactly that reason.
+    if grep -vE '^[[:space:]]*#' "${REPO_ROOT}/install.sh" | grep -q 'sudo'; then
+        echo "install.sh calls sudo:"
+        grep -nE 'sudo' "${REPO_ROOT}/install.sh" | grep -vE '^[0-9]+:[[:space:]]*#'
+        return 1
+    fi
+    if grep -qE '>>?\s*"?\$\{?HOME\}?/\.(bashrc|zshrc|profile)' "${REPO_ROOT}/install.sh"; then
+        echo "install.sh writes to a shell startup file"
+        return 1
+    fi
+}
+
+@test "the one-line installer in the README is the URL the installer names for itself" {
+    # The README's first command and the usage line install.sh prints when it was piped into a shell
+    # are the same URL written twice, and a moved default ref would only be noticed in one of them.
+    repo="$(sed -n 's/^REPO="${DOCKER_CODE_REPO:-\(.*\)}"$/\1/p' "${REPO_ROOT}/install.sh")"
+    ref="$(sed -n 's/^REF="${DOCKER_CODE_REF:-\(.*\)}"$/\1/p' "${REPO_ROOT}/install.sh")"
+    [ -n "${repo}" ] && [ -n "${ref}" ]
+
+    grep -q 'raw\.githubusercontent\.com/${REPO}/${REF}/install\.sh' "${REPO_ROOT}/install.sh" || {
+        echo "install.sh does not build its own name from REPO and REF"; return 1
+    }
+    grep -qF "curl -fsSL https://raw.githubusercontent.com/${repo}/${ref}/install.sh | bash" \
+        "${REPO_ROOT}/README.md" || {
+        echo "the README does not carry the one-liner for ${repo}@${ref}"; return 1
+    }
+}
+
+@test "--system installs where the README says it does, and yields to an explicit path" {
+    # --help exits inside the option loop, so the usage text reports the paths as they stand at that
+    # point — which is how the resolution can be checked without writing to /opt on the machine
+    # running the suite.
+    prefix="$(sed -n 's/^SYSTEM_PREFIX=//p' "${REPO_ROOT}/install.sh")"
+    dir="$(sed -n 's/^SYSTEM_INSTALL_DIR=//p' "${REPO_ROOT}/install.sh")"
+    [ -n "${prefix}" ] && [ -n "${dir}" ]
+
+    run "${REPO_ROOT}/install.sh" --system --help
+    [ "${status}" -eq 0 ]
+    printf '%s\n' "${output}" | grep -E '^\s+--prefix DIR' | grep -qF "${prefix}"
+    printf '%s\n' "${output}" | grep -E '^\s+--dir DIR' | grep -qF "${dir}"
+
+    for path in "${prefix}" "${dir}"; do
+        grep -qF "${path}" "${REPO_ROOT}/README.md" || {
+            echo "--system installs into ${path}, which the README does not mention"; return 1
+        }
+    done
+
+    # A --prefix or --dir after --system is the more specific instruction and has to win, or
+    # `docker-code self-update` on a system installation would relocate it on the next run.
+    run "${REPO_ROOT}/install.sh" --system --prefix /tmp/dc-prefix --dir /tmp/dc-dir --help
+    [ "${status}" -eq 0 ]
+    printf '%s\n' "${output}" | grep -E '^\s+--prefix DIR' | grep -qF /tmp/dc-prefix
+    printf '%s\n' "${output}" | grep -E '^\s+--dir DIR' | grep -qF /tmp/dc-dir
+}
+
+@test "--system refuses rather than half-installing when it may not write there" {
+    # The failure mode it exists for: a copy into /opt that stops partway and a "Permission denied"
+    # for every wrapper after it. The check runs before anything is created, so the tree stays absent.
+    if [ "$(id -u)" = "0" ]; then
+        command -v setpriv >/dev/null || skip "needs setpriv to drop root"
+        run setpriv --reuid=65534 --regid=65534 --clear-groups \
+            bash "${REPO_ROOT}/install.sh" --system --local "${REPO_ROOT}"
+    else
+        run bash "${REPO_ROOT}/install.sh" --system --local "${REPO_ROOT}"
+    fi
+
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"root"* ]] || {
+        echo "the refusal does not say what is missing:"; echo "${output}"; return 1
+    }
+
+    # The other way into the same directory: `docker-code self-update` on a --system installation
+    # passes the recorded --prefix and --dir rather than --system, and it is normally the user who
+    # types it, not root.
+    if [ "$(id -u)" = "0" ]; then
+        run setpriv --reuid=65534 --regid=65534 --clear-groups \
+            bash "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+            --prefix /opt/docker-code --dir /usr/local/bin
+    else
+        run bash "${REPO_ROOT}/install.sh" --local "${REPO_ROOT}" \
+            --prefix /opt/docker-code --dir /usr/local/bin
+    fi
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"root"* ]] || {
+        echo "the refusal does not say what is missing:"; echo "${output}"; return 1
+    }
 }
 
 @test "the installer validates a download before installing it" {

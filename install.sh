@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Installs docker-code and one wrapper per agent.
 #
-#   git clone https://github.com/ruepp-jenkins/docker-code.git && ./docker-code/install.sh --local
-#   ./install.sh                         clone the tree itself, then install it
+#   curl -fsSL https://raw.githubusercontent.com/ruepp-jenkins/docker-code/master/install.sh | bash
+#   ./install.sh                         the same thing from a file: clone the tree, then install it
 #   ./install.sh --local                 from a checkout you already have
+#   ./install.sh --system                for every user: /opt/docker-code and /usr/local/bin
 #   ./install.sh --uninstall
 #
 # What it does, and nothing else:
@@ -34,7 +35,14 @@ case "${SELF}" in
         ;;
 esac
 
+# An installation every user on the machine shares. /opt is the conventional place for a
+# self-contained tree that no package manager owns, and /usr/local/bin is on everybody's PATH,
+# including the sparse one a minimal login shell hands root.
+SYSTEM_PREFIX=/opt/docker-code
+SYSTEM_INSTALL_DIR=/usr/local/bin
+
 MODE=install
+SYSTEM=0
 SOURCE=""
 
 usage() {
@@ -42,6 +50,7 @@ usage() {
 Usage: ${SELF} [options]
 
   --local [DIR]   install from a checkout (default: the directory this script is in)
+  --system        install for every user: ${SYSTEM_PREFIX} and ${SYSTEM_INSTALL_DIR} (needs root)
   --dir DIR       where to link the commands   (default: ${INSTALL_DIR})
   --prefix DIR    where to copy the tree       (default: ${PREFIX})
   --ref REF       branch or tag to download    (default: ${REF})
@@ -61,6 +70,14 @@ while [ "$#" -gt 0 ]; do
                 *) SOURCE="$2"; shift ;;
             esac
             ;;
+        --system)
+            SYSTEM=1
+            # Assigned rather than defaulted: --system is explicit, so it outranks DOCKER_CODE_PREFIX
+            # and INSTALL_DIR from the environment. A --dir or --prefix later on the same line still
+            # wins, because it is read after this.
+            INSTALL_DIR="${SYSTEM_INSTALL_DIR}"
+            PREFIX="${SYSTEM_PREFIX}"
+            ;;
         --dir) INSTALL_DIR="${2:?--dir needs a directory}"; shift ;;
         --prefix) PREFIX="${2:?--prefix needs a directory}"; shift ;;
         --ref) REF="${2:?--ref needs a branch or tag}"; shift ;;
@@ -72,6 +89,31 @@ while [ "$#" -gt 0 ]; do
 done
 
 die() { echo "install.sh: ERROR: $*" >&2; exit 1; }
+
+writable() {
+    local dir="$1"
+    # The leaf normally does not exist yet, so what has to be writable is its deepest existing
+    # ancestor — /opt for /opt/docker-code.
+    while [ ! -e "${dir}" ] && [ "${dir}" != "/" ]; do
+        dir="$(dirname "${dir}")"
+    done
+    [ -w "${dir}" ]
+}
+
+# Both destinations are checked before anything is created or deleted. The install replaces the
+# prefix wholesale, so without this the two ways of arriving at a directory somebody else owns —
+# --system without root, and `docker-code self-update` on a --system tree run as the user — both
+# fail in the middle of `rm -rf`, once per file, with the installation already gone from PATH.
+if ! writable "${PREFIX}" || ! writable "${INSTALL_DIR}"; then
+    if [ "${SYSTEM}" = "1" ]; then
+        die "--system installs into ${PREFIX} and links into ${INSTALL_DIR}, and this shell may" \
+            "write to neither. Run it as root, or leave --system off for a single-user install" \
+            "under ${HOME:-~}/.local that needs no privileges."
+    fi
+    die "this shell may not write to ${PREFIX} or ${INSTALL_DIR}. An installation made with" \
+        "--system belongs to root: run this as root, or install a copy of your own by leaving" \
+        "--prefix and --dir at their defaults."
+fi
 
 # Both the install and the uninstall below do `rm -rf "${PREFIX}"`, and PREFIX is whatever --prefix or
 # DOCKER_CODE_PREFIX said. `--prefix ~/.local` instead of ~/.local/share/docker-code is one keystroke
@@ -312,12 +354,20 @@ case ":${PATH}:" in
         echo "    docker-code update    pull the published images ahead of time"
         ;;
     *)
-        rc="${HOME}/.bashrc"
-        case "${SHELL:-}" in
-            */zsh) rc="${HOME}/.zshrc" ;;
-        esac
-        echo "${INSTALL_DIR} is not on your PATH. Add it:"
-        echo "    echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ${rc}"
-        echo "then open a new shell and run: docker-code list"
+        # An all-users installation is not fixed in one user's startup file, and the person running it
+        # as root is usually not the person who will run the agents.
+        if [ "${SYSTEM}" = "1" ]; then
+            echo "${INSTALL_DIR} is not on the PATH of this shell, which is unusual for a system"
+            echo "directory. Check the login shell of the accounts that will run the agents, then:"
+            echo "    docker-code list"
+        else
+            rc="${HOME}/.bashrc"
+            case "${SHELL:-}" in
+                */zsh) rc="${HOME}/.zshrc" ;;
+            esac
+            echo "${INSTALL_DIR} is not on your PATH. Add it:"
+            echo "    echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ${rc}"
+            echo "then open a new shell and run: docker-code list"
+        fi
         ;;
 esac
