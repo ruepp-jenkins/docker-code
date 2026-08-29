@@ -104,6 +104,9 @@ Everything via environment variable so that it composes itself with the wrapper.
 | `NET=restricted` | `full` | Egress only to the tool's domains (iptables + ipset) |
 | `NET=gateway` | | Egress only to the tool's domains, filtered by **name** in a proxy container ([EGRESS.md](docs/EGRESS.md)) |
 | `NET=none` | | no network at all |
+| `EGRESS_POLICY=open` | `allowlist` | under `NET=gateway`: allow the internet, refuse localhost and the local subnets |
+| `ALLOW_DOMAINS="a.example,10.0.0.5"` | | additionally allowed — names or CIDRs |
+| `DENY_DOMAINS="b.example,10.0.0.0/8"` | | under `NET=gateway`: refused under either policy, ahead of every allow |
 | `DIND=0` \| `rootless` \| `privileged` | `privileged` | inner docker daemon |
 | `LOCAL=1` | `0` | use the common local models |
 | `LOCAL_MODEL=<name>` | | which (`docker-code models list`) |
@@ -119,6 +122,10 @@ Everything via environment variable so that it composes itself with the wrapper.
 DOCKER_CODE_YOLO=1 DOCKER_CODE_NET=restricted claude-docker
 DOCKER_CODE_SHELL=1 opencode-docker           # Inspect the container
 DOCKER_CODE_DRY_RUN=1 qwen-docker             # Show what would happen
+
+# Research on the web is fine, the LAN and the Jenkins are not:
+DOCKER_CODE_NET=gateway DOCKER_CODE_EGRESS_POLICY=open \
+  DOCKER_CODE_DENY_DOMAINS=".corp.example,jenkins.internal" claude-docker
 ```
 
 Settings that are not per-agent — the shared networks and their address ranges — are in

@@ -98,6 +98,13 @@ that does not start, so `session_egress` dies where `session_mirror` warns.
 A change to what a session may reach usually belongs in both. `tests/egress.bats` compares the two
 common-domain lists for exactly that reason. See [Egress](docs/EGRESS.md).
 
+`gateway` carries a second axis the firewall has no equivalent of: `DOCKER_CODE_EGRESS_POLICY` is
+`allowlist` (only the listed names) or `open` (the internet, minus `EGRESS_LOCAL_NETWORKS`, minus
+`DOCKER_CODE_DENY_DOMAINS`). `open` rests on squid's `dst`, which resolves a name before matching it,
+so a public name pointing at a LAN address is refused — an ipset filled once at boot cannot express
+that, which is why the parity rule above stops at the domain lists. Both knobs are ignored under any
+other `NET`, and each says so rather than failing quietly.
+
 ## Project constraints
 
 - Never install an agent into `/home/agent` in a Dockerfile. The first real start replaces that path

@@ -20,22 +20,36 @@ setup() {
     mkdir -p "${STORAGE_ROOT}"
 }
 
-# Generate a config through lib/egress.sh exactly as the launcher does, and print its path.
-write_config() {
-    local id="$1"
-    shift
+# Generate a config through lib/egress.sh exactly as the launcher does, and print its path. The
+# policy and the blocklist are egress_write_config's second and third arguments; the two wrappers
+# below name them, so a test only says what it is actually about.
+write_config_as() {
+    local id="$1" policy="$2" denied="$3"
+    shift 3
     run bash -c "
         STORAGE_ROOT='${STORAGE_ROOT}'
         warn() { :; }
         die() { echo \"\$*\" >&2; exit 1; }
         . '${REPO_ROOT}/lib/egress.sh'
-        egress_write_config '${id}' $*
+        egress_write_config '${id}' '${policy}' '${denied}' $*
     "
     [ "${status}" -eq 0 ] || {
         echo "egress_write_config failed: ${output}"
         return 1
     }
     CONFIG="${output}"
+}
+
+write_config() {
+    local id="$1"
+    shift
+    write_config_as "${id}" allowlist "" "$@"
+}
+
+write_open_config() {
+    local id="$1"
+    shift
+    write_config_as "${id}" open "" "$@"
 }
 
 dry() {
@@ -424,6 +438,191 @@ EOF
     write_config codex api.anthropic.com
     ! grep -q 'api.openai.com' "${CONFIG}"
     grep -q 'api.anthropic.com' "${CONFIG}"
+}
+
+# ---------------------------------------------------------------------------------------------
+# The open policy and the blocklist
+#
+# DOCKER_CODE_EGRESS_POLICY=open inverts the allowlist: the internet is reachable and the local
+# networks are not, which is the shape for "research is fine, our own infrastructure is not". Its
+# whole value is in one deny rule and where that rule sits, so both are asserted directly.
+# ---------------------------------------------------------------------------------------------
+
+@test "the open policy refuses the local networks rather than allowing everything" {
+    write_open_config codex docker-code-ollama
+    grep -qE '^acl local_networks dst ' "${CONFIG}"
+    grep -q '^http_access deny local_networks$' "${CONFIG}"
+
+    # The ranges that make it a policy rather than a gesture. 169.254.0.0/16 is the cloud metadata
+    # service, whose entire job is to hand credentials to whoever asks it.
+    for range in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
+        grep -qE "^acl local_networks dst .*${range//./\\.}" "${CONFIG}" || {
+            echo "${range} is not refused by the open policy:"
+            grep -n 'local_networks' "${CONFIG}"
+            return 1
+        }
+    done
+}
+
+@test "the local networks are matched on the address, so a name pointing inside is refused too" {
+    # `dstdomain` would only ever see the name, and a public hostname with an A record of 192.168.x —
+    # the DNS-rebinding shape of this — would walk straight through it. `dst` makes squid resolve the
+    # request before it decides, which is what closes that.
+    write_open_config codex docker-code-ollama
+    grep -qE '^acl local_networks dst ' "${CONFIG}"
+    ! grep -q 'local_networks dstdomain' "${CONFIG}"
+}
+
+@test "the open policy allows the internet on the ports that were already safe" {
+    write_open_config codex docker-code-ollama
+    grep -q '^http_access allow CONNECT SSL_ports$' "${CONFIG}"
+    grep -q '^http_access allow Safe_ports$' "${CONFIG}"
+
+    # Not the service ports. Those exist for the three shared services, which are on the allowlist
+    # and let through by name above; opening 4000 or 11434 to an arbitrary host is not what "the
+    # internet" asked for.
+    ! grep -qE '^http_access allow (CONNECT )?service_ports$' "${CONFIG}" || {
+        echo "the open policy opens a service port to every host:"
+        grep -n 'service_ports' "${CONFIG}"
+        return 1
+    }
+}
+
+@test "the local-network deny sits after the allows, so a named local host still works" {
+    # squid is first-match-wins, and the shared services answer on Docker networks inside 172.16/12.
+    # A deny placed above them would cut off local models and the registry mirror in the one mode
+    # where the session has no other route to them — and would take a LAN host named in
+    # DOCKER_CODE_ALLOW_DOMAINS with it, which is the only way that policy has to say "except this
+    # one server".
+    write_open_config codex docker-code-ollama 192.168.5.10
+    local allow_line deny_line
+    allow_line="$(grep -n '^http_access allow allowed_domains Safe_ports$' "${CONFIG}" | cut -d: -f1)"
+    deny_line="$(grep -n '^http_access deny local_networks$' "${CONFIG}" | cut -d: -f1)"
+    [ -n "${allow_line}" ] && [ -n "${deny_line}" ]
+    [ "${allow_line}" -lt "${deny_line}" ] || {
+        echo "the local-network deny is above the allowlist, so the shared services are unreachable:"
+        grep -n '^http_access' "${CONFIG}"
+        return 1
+    }
+}
+
+@test "the open policy carries none of the built-in allowlists" {
+    # They name public hosts, which this policy allows without being told. Carrying them anyway would
+    # add forty lines that decide nothing to the one file whose point is that the policy can be read
+    # off the page.
+    export DOCKER_CODE_NET=gateway DOCKER_CODE_EGRESS_POLICY=open
+    block="$(sed -n '/^session_egress()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [[ "${block}" == *'if [ "${policy}" = "allowlist" ]'* ]] || {
+        echo "session_egress assembles the built-in lists regardless of the policy"
+        return 1
+    }
+}
+
+@test "a blocked domain is denied ahead of every allow, so it beats a wildcard it sits under" {
+    # The point of a blocklist next to an allowlist: .github.com allowed as a whole with one host of
+    # it refused. Only the deny-first order can express that — after the allow it would never be
+    # reached.
+    write_config_as codex allowlist "gist.github.com" .github.com
+    grep -qE '^acl blocked_domains dstdomain .*gist\.github\.com' "${CONFIG}"
+
+    local deny_line allow_line
+    deny_line="$(grep -n '^http_access deny blocked_domains$' "${CONFIG}" | cut -d: -f1)"
+    allow_line="$(grep -n '^http_access allow CONNECT allowed_domains SSL_ports$' "${CONFIG}" | cut -d: -f1)"
+    [ -n "${deny_line}" ] && [ -n "${allow_line}" ]
+    [ "${deny_line}" -lt "${allow_line}" ] || {
+        echo "the blocklist is consulted after the allowlist, so it can never refuse anything:"
+        grep -n '^http_access' "${CONFIG}"
+        return 1
+    }
+}
+
+@test "the blocklist sorts addresses and names apart, exactly as the allowlist does" {
+    # One address in a dstdomain list is fatal to the whole config, so a CIDR in DOCKER_CODE_DENY_DOMAINS
+    # would stop the gateway starting rather than mis-filter one entry.
+    write_config_as codex allowlist "evil.example 10.10.0.0/16 fd00::/8" api.openai.com
+    grep -qE '^acl blocked_domains dstdomain .*evil\.example' "${CONFIG}"
+    grep -qE '^acl blocked_addresses dst .*10\.10\.0\.0/16' "${CONFIG}"
+    # IPv6 has no dot for the IPv4 heuristic to find, and a deny list is where one is likely written.
+    grep -qE '^acl blocked_addresses dst .*fd00::/8' "${CONFIG}"
+    ! grep -E '^acl blocked_domains dstdomain' "${CONFIG}" | grep -q '10\.10\.0\.0/16'
+}
+
+@test "the blocklist applies under both policies" {
+    write_config_as codex open "evil.example" docker-code-ollama
+    grep -q '^http_access deny blocked_domains$' "${CONFIG}"
+    write_config_as codex allowlist "evil.example" api.openai.com
+    grep -q '^http_access deny blocked_domains$' "${CONFIG}"
+}
+
+@test "an unknown policy stops the gateway instead of picking one" {
+    # Fail closed and loudly. Defaulting a misspelt policy to either value guesses at how much a
+    # session may reach, and one of the two guesses is silently wrong.
+    run bash -c "
+        STORAGE_ROOT='${STORAGE_ROOT}'
+        warn() { :; }
+        die() { echo \"\$*\" >&2; exit 1; }
+        . '${REPO_ROOT}/lib/egress.sh'
+        egress_write_config codex opne '' api.openai.com
+    "
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"allowlist"* ]]
+}
+
+@test "the policy is recorded in the generated config, since a gateway is shared" {
+    # `docker-code egress status` reads it back from there. The gateway keeps the policy of the
+    # newest start of that agent, which is not necessarily what the environment of any one shell
+    # would resolve today.
+    write_open_config codex docker-code-ollama
+    grep -q '^# policy: open$' "${CONFIG}"
+    write_config codex api.openai.com
+    grep -q '^# policy: allowlist$' "${CONFIG}"
+
+    block="$(sed -n '/^cmd_egress()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [[ "${block}" == *"# policy: "* ]] || {
+        echo "egress status does not read the policy back out of the generated config"
+        return 1
+    }
+}
+
+@test "the shared-services gateway is never opened by a session's policy" {
+    # It fronts the registry mirror and Ollama, whose upstreams are a fixed list. EGRESS_POLICY says
+    # what the agent may reach; letting it widen a service's own fetches answers a question nobody
+    # asked.
+    block="$(sed -n '/^egress_services_start()/,/^}/p' "${REPO_ROOT}/lib/egress.sh")"
+    [[ "${block}" == *"egress_start \"\${EGRESS_SERVICES_ID}\" allowlist"* ]] || {
+        echo "the services gateway does not pin its policy to allowlist:"
+        echo "${block}"
+        return 1
+    }
+}
+
+@test "a policy that was asked for and cannot be applied stops the session" {
+    export DOCKER_CODE_NET=gateway DOCKER_CODE_EGRESS_POLICY=sideways
+    run "${REPO_ROOT}/bin/codex-docker"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"allowlist or open"* ]]
+}
+
+@test "a gateway setting under another NET says so rather than doing nothing" {
+    # The failure worth naming: the blocklist reads as applied, and the first thing it was meant to
+    # keep out is reachable. Neither knob has an equivalent in the in-container firewall.
+    export DOCKER_CODE_NET=restricted DOCKER_CODE_DENY_DOMAINS=evil.example
+    dry codex-docker
+    [[ "${output}" == *"DOCKER_CODE_DENY_DOMAINS"* ]]
+    [[ "${output}" == *"NET=gateway"* ]]
+
+    unset DOCKER_CODE_DENY_DOMAINS
+    export DOCKER_CODE_EGRESS_POLICY=open
+    dry codex-docker
+    [[ "${output}" == *"DOCKER_CODE_EGRESS_POLICY"* ]]
+}
+
+@test "the knobs keep their per-agent form" {
+    # DOCKER_CODE_CODEX_EGRESS_POLICY has to beat DOCKER_CODE_EGRESS_POLICY, which is only true if
+    # both are resolved through agent_knob.
+    block="$(sed -n '/^session_egress()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    [[ "${block}" == *"agent_knob EGRESS_POLICY allowlist"* ]]
+    [[ "${block}" == *"agent_knob DENY_DOMAINS"* ]]
 }
 
 # ---------------------------------------------------------------------------------------------

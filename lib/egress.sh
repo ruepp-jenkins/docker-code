@@ -262,6 +262,40 @@ EGRESS_GITHUB_DOMAINS=(
     .githubusercontent.com
 )
 
+# The address ranges DOCKER_CODE_EGRESS_POLICY=open refuses.
+#
+# That policy allows the internet and denies what is not on it, and this is where "not on it" is
+# defined. The loopback and the three RFC1918 blocks are the obvious half. The rest reach something
+# local without being private: 169.254.0.0/16 carries the cloud metadata service at 169.254.169.254,
+# whose whole purpose is to hand out credentials to whoever asks, and 100.64.0.0/10 is both carrier
+# NAT and the range Tailscale allocates from, so a tailnet is a LAN under another name.
+#
+# Matched with squid's `dst`, which resolves the requested name before it decides. A public hostname
+# with an A record pointing at 192.168.x — the DNS-rebinding shape of this — is therefore refused on
+# the address it resolves to rather than admitted on the name it was asked for.
+#
+# The last three are local in no sense at all; they are not the internet either, and a session loses
+# nothing by not being able to address them.
+#
+# What is missing from a given network is DOCKER_CODE_DENY_DOMAINS' job: a LAN on a public range, a
+# VPN peer, an internal name. This list cannot know those.
+EGRESS_LOCAL_NETWORKS=(
+    0.0.0.0/8            # "this network", and 0.0.0.0 itself
+    127.0.0.0/8          # loopback
+    10.0.0.0/8           # RFC1918
+    172.16.0.0/12        # RFC1918, and where Docker puts its own networks
+    192.168.0.0/16       # RFC1918
+    169.254.0.0/16       # link-local, with the metadata service at 169.254.169.254
+    100.64.0.0/10        # carrier NAT, and Tailscale's range
+    192.0.0.0/24         # IETF protocol assignments
+    198.18.0.0/15        # benchmarking
+    224.0.0.0/4          # multicast
+    240.0.0.0/4          # reserved, including 255.255.255.255
+    ::1/128              # the same three ideas over IPv6: loopback,
+    fc00::/7             # unique local,
+    fe80::/10            # link-local
+)
+
 # What the shared services need for their own upstream fetches. Only ever used by the services
 # gateway, never by an agent's.
 EGRESS_SERVICE_UPSTREAM_DOMAINS=(
@@ -351,51 +385,87 @@ EOF
     printf '%s' "${result}" | grep -v '^[[:space:]]*$' || true
 }
 
-# egress_write_config <id> <domains...>
+# egress_sort_entries <entries...>
 #
-# A leading dot is squid's "this domain and every subdomain"; without one, dstdomain matches that
-# host exactly. Entries are passed through verbatim so the caller decides which it wants — deriving
-# `.openai.com` from `api.openai.com` here would silently widen every agent's bound.
-egress_write_config() {
-    local id="$1"
-    shift
+# Splits a mixed list of names and addresses into the two ACL types squid has for them, pruned and
+# joined into the one space-separated line each ACL wants, in egress_sorted_domains and
+# egress_sorted_addresses.
+#
+# An address or CIDR cannot be a dstdomain — squid rejects the whole config rather than that one line
+# — while DOCKER_CODE_ALLOW_DOMAINS and DOCKER_CODE_DENY_DOMAINS both take either, so the sorting
+# happens here rather than in the user's head. Globals rather than a return value because there are
+# two of them, which is how the rest of this file returns a pair.
+egress_sort_entries() {
+    local entry domains="" addresses=""
 
-    local dir conf domain_list address_list entry
-    dir="$(egress_dir "${id}")"
-    conf="${dir}/squid.conf"
-
-    mkdir -p "${dir}" || return 1
-
-    # An address or CIDR cannot be a dstdomain; squid rejects the whole config rather than that one
-    # line. DOCKER_CODE_ALLOW_DOMAINS has always accepted both, so sort them into the two ACL types
-    # instead of making the user care which list a value belongs in.
-    domain_list=""
-    address_list=""
     for entry in "$@"; do
         [ -n "${entry}" ] || continue
         case "${entry}" in
-            *[0-9].[0-9]*/[0-9]*|[0-9]*.[0-9]*.[0-9]*.[0-9]*)
-                address_list="${address_list}${entry}
+            # A colon anywhere means IPv6: no hostname contains one, and a deny list is where an
+            # fd00::/8 is likely to be written.
+            *:*|*[0-9].[0-9]*/[0-9]*|[0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                addresses="${addresses}${entry}
 " ;;
             *)
-                domain_list="${domain_list}${entry}
+                domains="${domains}${entry}
 " ;;
         esac
     done
 
     # shellcheck disable=SC2046  # one domain per line is exactly what should be split here
-    domain_list="$(egress_prune_domains $(printf '%s' "${domain_list}"))"
-    address_list="$(printf '%s' "${address_list}" | awk '!seen[$0]++' || true)"
+    domains="$(egress_prune_domains $(printf '%s' "${domains}"))"
+    addresses="$(printf '%s' "${addresses}" | awk '!seen[$0]++' || true)"
 
     # One space-separated line per ACL, which is how squid wants them.
-    domain_list="$(printf '%s' "${domain_list}" | tr '\n' ' ')"
-    address_list="$(printf '%s' "${address_list}" | tr '\n' ' ')"
-    domain_list="${domain_list% }"
-    address_list="${address_list% }"
+    egress_sorted_domains="$(printf '%s' "${domains}" | tr '\n' ' ')"
+    egress_sorted_addresses="$(printf '%s' "${addresses}" | tr '\n' ' ')"
+    egress_sorted_domains="${egress_sorted_domains% }"
+    egress_sorted_addresses="${egress_sorted_addresses% }"
+}
+
+# egress_write_config <id> <policy> <denied> <domains...>
+#
+# <policy> is `allowlist`, where the domains are the only thing a session may reach, or `open`, where
+# they are an exemption from EGRESS_LOCAL_NETWORKS and everything else on the internet is allowed.
+# Every caller states it rather than defaulting: this is the one line in the file that decides how
+# much a session can reach, and a policy that could be inherited by accident is one that will be.
+#
+# <denied> is a single space-separated string — the variadic slot is taken by the domains — and is
+# refused under either policy.
+#
+# A leading dot is squid's "this domain and every subdomain"; without one, dstdomain matches that
+# host exactly. Entries are passed through verbatim so the caller decides which it wants — deriving
+# `.openai.com` from `api.openai.com` here would silently widen every agent's bound.
+egress_write_config() {
+    local id="$1" policy="$2" denied="$3"
+    shift 3
+
+    case "${policy}" in
+        allowlist|open) ;;
+        *) die "the egress policy is 'allowlist' or 'open', not '${policy}'" ;;
+    esac
+
+    local dir conf domain_list address_list blocked_domains blocked_addresses
+    dir="$(egress_dir "${id}")"
+    conf="${dir}/squid.conf"
+
+    mkdir -p "${dir}" || return 1
+
+    egress_sort_entries "$@"
+    domain_list="${egress_sorted_domains}"
+    address_list="${egress_sorted_addresses}"
+
+    # shellcheck disable=SC2086  # a space-separated list is the documented interface of the knob
+    egress_sort_entries ${denied}
+    blocked_domains="${egress_sorted_domains}"
+    blocked_addresses="${egress_sorted_addresses}"
 
     {
         echo "# Generated by docker-code on every start of the ${id} gateway. Do not edit:"
-        echo "# this file is the allowlist, and it is rewritten from the environment each time."
+        echo "# this file is the policy, and it is rewritten from the environment each time."
+        # Read back by `docker-code egress status`, which is otherwise unable to say which of the two
+        # policies a running gateway came up with.
+        echo "# policy: ${policy}"
         echo
         echo "http_port ${EGRESS_PORT}"
         echo "coredump_dir /var/spool/squid"
@@ -416,6 +486,17 @@ egress_write_config() {
         if [ -n "${address_list}" ]; then
             printf 'acl allowed_addresses dst %s\n' "${address_list}"
         fi
+        if [ -n "${blocked_domains}" ]; then
+            printf 'acl blocked_domains dstdomain %s\n' "${blocked_domains}"
+        fi
+        if [ -n "${blocked_addresses}" ]; then
+            printf 'acl blocked_addresses dst %s\n' "${blocked_addresses}"
+        fi
+        if [ "${policy}" = "open" ]; then
+            # `dst` and not `dstdomain`: squid resolves the requested name before matching, so this
+            # holds for a public name whose A record points inside as well as for a literal address.
+            printf 'acl local_networks dst %s\n' "${EGRESS_LOCAL_NETWORKS[*]}"
+        fi
 
         echo "acl SSL_ports port 443"
         echo "acl Safe_ports port 80 443"
@@ -434,6 +515,18 @@ egress_write_config() {
         # would change that quietly, and `manager` is built in, so saying it costs a line.
         echo "http_access deny manager"
         echo "http_access deny !Safe_ports !service_ports"
+
+        # Ahead of every allow, because squid is first-match-wins and that is the only order in which
+        # a deny can carve a hole in something already allowed: .github.com on the allowlist with one
+        # host of it refused. It also means a name in both lists is refused, which is the safe way
+        # round for a pair that can only have been written by mistake.
+        if [ -n "${blocked_domains}" ]; then
+            echo "http_access deny blocked_domains"
+        fi
+        if [ -n "${blocked_addresses}" ]; then
+            echo "http_access deny blocked_addresses"
+        fi
+
         if [ -n "${domain_list}" ]; then
             echo "http_access allow CONNECT allowed_domains SSL_ports"
             echo "http_access allow CONNECT allowed_domains service_ports"
@@ -444,6 +537,22 @@ egress_write_config() {
             echo "http_access allow CONNECT allowed_addresses SSL_ports"
             echo "http_access allow allowed_addresses Safe_ports"
         fi
+
+        if [ "${policy}" = "open" ]; then
+            # After the allows above and not before them, so that what was named survives it. Both
+            # halves of that matter: the shared services answer on Docker networks inside 172.16/12,
+            # and a DOCKER_CODE_ALLOW_DOMAINS entry naming a LAN host is the "except this one server"
+            # that this policy would otherwise have no way to express.
+            echo "http_access deny local_networks"
+
+            # The internet, on the ports the deny above left standing. Not service_ports: those exist
+            # for the three shared services, which are named on the allowlist and were let through
+            # already, and opening 4000 or 11434 to an arbitrary host is not what "the internet" was
+            # asked for.
+            echo "http_access allow CONNECT SSL_ports"
+            echo "http_access allow Safe_ports"
+        fi
+
         echo "http_access deny all"
         echo
 
@@ -563,22 +672,25 @@ egress_connect() {
     docker network connect "${network}" "${container}" >/dev/null 2>&1
 }
 
-# egress_start <id> <domains...>
+# egress_start <id> <policy> <denied> <domains...>
+#
+# The three leading arguments are egress_write_config's; see there for what they mean and why the
+# policy is never defaulted.
 #
 # Returns non-zero on any failure, and callers must treat that as fatal for the session. This is the
 # one shared service in docker-code that does not degrade to a warning: a missing model gateway
 # costs you local models, but a missing egress gateway would leave a session that asked to be
 # filtered running unfiltered, which is worse than not starting at all.
 egress_start() {
-    local id="$1"
-    shift
+    local id="$1" policy="$2" denied="$3"
+    shift 3
 
     local container network conf listed
     container="$(egress_container "${id}")"
     network="$(egress_network "${id}")"
 
-    conf="$(egress_write_config "${id}" "$@")" || {
-        warn "could not write the allowlist for the ${id} gateway under $(egress_dir "${id}")"
+    conf="$(egress_write_config "${id}" "${policy}" "${denied}" "$@")" || {
+        warn "could not write the policy for the ${id} gateway under $(egress_dir "${id}")"
         return 1
     }
 
@@ -596,12 +708,24 @@ egress_start() {
 
     ensure_image "${EGRESS_IMAGE}" "the ${id} egress gateway" || return 1
 
-    # The size of the allowlist, said out loud. A gateway that came up around an allowlist of two
-    # entries because AGENT_DOMAINS was empty looks exactly like a healthy one until something is
-    # refused, and this is the cheapest place to notice.
-    local allowed
+    # The size of the bound, said out loud. A gateway that came up around an allowlist of two entries
+    # because AGENT_DOMAINS was empty looks exactly like a healthy one until something is refused,
+    # and this is the cheapest place to notice. Under `open` the number worth hearing is the other
+    # one: everything not blocked is reachable, so the blocklist is the whole of the bound a user
+    # wrote themselves.
+    local allowed blocked
     allowed="$(awk '/^acl allowed_domains dstdomain/{print NF-3; exit}' "${conf}" 2>/dev/null || true)"
-    say "starting the egress gateway for ${id} (${allowed:-0} domains allowed)"
+    blocked="$(awk '/^acl blocked_(domains dstdomain|addresses dst) /{n+=NF-3} END{print n+0}' \
+        "${conf}" 2>/dev/null || true)"
+    if [ "${policy}" = "open" ]; then
+        say "starting the egress gateway for ${id} (open: the internet, minus the local networks" \
+            "and ${blocked:-0} on the blocklist)"
+    elif [ "${blocked:-0}" != "0" ]; then
+        say "starting the egress gateway for ${id} (${allowed:-0} domains allowed," \
+            "${blocked} blocked)"
+    else
+        say "starting the egress gateway for ${id} (${allowed:-0} domains allowed)"
+    fi
 
     egress_create=(docker run --detach --rm
         --name "${container}"
@@ -725,8 +849,12 @@ egress_remove() {
 # not containment of a hostile actor. They run fixed upstream software, not agent-controlled code,
 # which is why that is the right trade here and the wrong one for a session.
 # ---------------------------------------------------------------------------------------------
+# Always `allowlist`, whatever the session asked for. This gateway fronts the registry mirror and
+# Ollama, whose upstreams are two vendors and a fixed list; DOCKER_CODE_EGRESS_POLICY is a statement
+# about what the *agent* may reach, and letting it widen a service's own fetches would be answering a
+# question nobody asked.
 egress_services_start() {
-    egress_start "${EGRESS_SERVICES_ID}" "${EGRESS_SERVICE_UPSTREAM_DOMAINS[@]}"
+    egress_start "${EGRESS_SERVICES_ID}" allowlist "" "${EGRESS_SERVICE_UPSTREAM_DOMAINS[@]}"
 }
 
 egress_services_url() { egress_url "${EGRESS_SERVICES_ID}"; }

@@ -4,8 +4,12 @@
 container the session cannot reach into.
 
 ```bash
-DOCKER_CODE_NET=gateway codex-docker
+DOCKER_CODE_NET=gateway codex-docker                                   # only the agent's own list
+DOCKER_CODE_NET=gateway DOCKER_CODE_EGRESS_POLICY=open codex-docker    # the internet, but no LAN
 ```
+
+The first is the default and is described by most of this file. The second inverts it — see
+[Two policies](#two-policies-allowlist-and-open).
 
 ## Why, next to `NET=restricted`
 
@@ -95,23 +99,142 @@ the last one exits. Per agent rather than one shared proxy so that each agent's 
 its own bound — a single gateway would have to allow the union, and a Codex session could then reach
 `api.anthropic.com`.
 
-Sharing has one consequence worth knowing: the allowlist is rewritten every time a session of that
-agent starts, and the gateway is recreated around it. A second session started with a wider
-`DOCKER_CODE_ALLOW_DOMAINS` therefore widens the policy for the session already running, which never
-asked for it. The newest start wins, for every session behind that gateway. Where two sessions of one
-agent must not share a bound, give them different agents or start them with the same allowlist.
+Sharing has one consequence worth knowing: the policy is rewritten every time a session of that agent
+starts, and the gateway is recreated around it. A second session started with a wider
+`DOCKER_CODE_ALLOW_DOMAINS` — or with `DOCKER_CODE_EGRESS_POLICY=open`, which is wider still —
+therefore widens what the session already running may reach, and it never asked for that. The newest
+start wins, for every session behind that gateway. Where two sessions of one agent must not share a
+bound, give them different agents or start them the same way.
 
 ```bash
-docker-code egress status              # which gateways are up, and where their allowlist is
+docker-code egress status              # which gateways are up, under which policy, and where it lives
 docker-code egress logs <agent>        # what was allowed and what was refused
 docker-code egress stop [agent...]     # all of them, or named ones
 ```
 
-The allowlist is regenerated on **every** start, unlike the LiteLLM config in `lib/models.sh` which is
+```
+GATEWAY                      STATE      POLICY     CONFIG
+docker-code-egress-codex     running    open       ~/docker-code/egress/codex/squid.conf
+docker-code-egress-services  running    allowlist  ~/docker-code/egress/services/squid.conf
+```
+
+`status` reads the policy back out of the generated file rather than out of your environment, for the
+reason above: the gateway holds the policy of the newest start, which is not necessarily the one your
+shell would resolve now.
+
+The file is regenerated on **every** start, unlike the LiteLLM config in `lib/models.sh` which is
 written once and left to you. This file *is* the policy; a stale copy is a wrong policy. Edit
-`AGENT_DOMAINS` or `DOCKER_CODE_ALLOW_DOMAINS`, not `squid.conf`.
+`AGENT_DOMAINS`, `DOCKER_CODE_ALLOW_DOMAINS` or `DOCKER_CODE_DENY_DOMAINS`, not `squid.conf`.
+
+## Two policies: `allowlist` and `open`
+
+| `DOCKER_CODE_EGRESS_POLICY` | a session may reach |
+|---|---|
+| `allowlist` *(default)* | only the names on [the list](#what-is-on-the-list) — nothing else exists |
+| `open` | the internet, minus the local networks, minus what you blocked |
+
+`open` is the answer to "reading documentation and searching the web is fine, our own network is
+not". It is the policy for an agent you want to research freely while it is sitting on a laptop that
+can also see a NAS, a Jenkins, a staging cluster and a router admin page.
+
+```bash
+DOCKER_CODE_NET=gateway DOCKER_CODE_EGRESS_POLICY=open claude-docker
+```
+
+`allowlist` stays the default because it is the tighter of the two, and because the two fail in
+opposite directions: a session that meant to be open and is not says so at its first refusal, while a
+session that meant to be bounded and is not says nothing at all until something has already left.
+
+Like every setting in the README's table, both knobs take a per-agent form —
+`DOCKER_CODE_CLAUDE_EGRESS_POLICY=open` opens one agent and leaves the rest alone. Both are read by
+`NET=gateway` and by nothing else; setting either under `NET=restricted` or `NET=full` prints a
+warning rather than quietly doing nothing, because the in-container firewall has no equivalent of
+them.
+
+### What `open` refuses
+
+| range | what is there |
+|---|---|
+| `127.0.0.0/8`, `::1/128` | the session's own loopback |
+| `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | RFC1918 — the LAN, and Docker's own networks |
+| `169.254.0.0/16`, `fe80::/10` | link-local, **including the cloud metadata service at `169.254.169.254`** |
+| `100.64.0.0/10` | carrier NAT, which is also the range Tailscale allocates from |
+| `fc00::/7` | IPv6 unique local |
+| `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4`, `240.0.0.0/4` | not local, not the internet either |
+
+The metadata row is the one to keep in mind on a cloud VM: `169.254.169.254` hands instance
+credentials to whoever asks it, over plain HTTP, with no authentication. An agent that can reach the
+web and that address is an agent that can post the second to the first.
+
+These are matched with squid's `dst`, which resolves the requested name **before** it decides. A
+public hostname whose A record points inside — the DNS-rebinding shape of this — is therefore refused
+on the address it resolves to rather than admitted on the name it was asked for:
+
+```bash
+docker-code egress logs claude
+#   TCP_TUNNEL/200 CONNECT example.com:443              ← the internet is fine
+#   TCP_DENIED/403 GET http://192.168.1.50/             ← the LAN is not
+#   TCP_DENIED/403 GET http://169.254.169.254/latest/meta-data/
+#   TCP_DENIED/403 GET http://192.168.1.1.nip.io/       ← nor by a name that resolves there
+```
+
+The list cannot know what is local to *your* network: a LAN on public addresses, a VPN peer, an
+internal name on a public range. That is what the blocklist below is for.
+
+### Blocking, under either policy
+
+`DOCKER_CODE_DENY_DOMAINS` takes names and CIDRs, comma or space separated, exactly like
+`DOCKER_CODE_ALLOW_DOMAINS`:
+
+```bash
+export DOCKER_CODE_NET=gateway
+export DOCKER_CODE_EGRESS_POLICY=open
+export DOCKER_CODE_DENY_DOMAINS=".corp.example,jenkins.internal,203.0.113.0/24,fd00::/8"
+```
+
+A leading dot is squid's wildcard here too, so `.corp.example` covers every host under it. Addresses
+and names may be mixed; they are sorted into the two ACL types squid has for them, because one
+address in a name list makes squid refuse the whole config and the gateway would not start at all.
+
+The blocklist is consulted **before** every allow, which is the only order that lets it carve a host
+out of something already allowed:
+
+```bash
+DOCKER_CODE_ALLOW_DOMAINS=.github.com DOCKER_CODE_DENY_DOMAINS=gist.github.com   # all but gists
+```
+
+It follows that a name on both lists is refused. That pairing can only be a mistake, and refusing is
+the safe way to read it.
+
+It also works under `allowlist`, where it subtracts from a list you did not write: `.docker.com` is
+on the built-in list as a whole, and one host of it can be taken back out.
+
+### What `open` still allows by name
+
+`open` writes a much shorter file than `allowlist` does, and everything in it is there because the
+policy would otherwise refuse it:
+
+| entry | why |
+|---|---|
+| `docker-code-ollama`, `docker-code-litellm`, `docker-code-registry` | the shared services answer on Docker networks inside `172.16/12`, which the local-network rule would refuse |
+| `DOCKER_CODE_ALLOW_DOMAINS` | yours — under this policy it means "except this one", the LAN host or internal name that *is* allowed |
+
+The built-in lists — the package registries, the image registries, the OS archives, GitHub — are not
+written at all under `open`. They name public hosts, which this policy allows without being told, and
+carrying them would add forty lines that decide nothing to the one file whose value is that you can
+read the policy off the page.
+
+```bash
+DOCKER_CODE_EGRESS_POLICY=open DOCKER_CODE_ALLOW_DOMAINS=10.20.0.5 …   # research, plus one server
+```
+
+Those two rules sit *above* the local-network deny, which is what makes the exception work at all;
+everything else is refused below it.
 
 ## What is on the list
+
+Everything in this section is the `allowlist` policy — the default. Under `open` none of it is
+written; see [What `open` still allows by name](#what-open-still-allows-by-name).
 
 | source | contents |
 |---|---|
@@ -258,6 +381,17 @@ These are global rather than per-agent, unlike the session knobs in README.md: t
 govern are shared across every agent by design, so a per-agent spelling would promise something it
 cannot deliver.
 
+What a session may reach is per-agent, and lives in the README's table with the rest of the session
+settings — `DOCKER_CODE_CODEX_EGRESS_POLICY` and `DOCKER_CODE_CODEX_DENY_DOMAINS` both work, which is
+the point of having one gateway per agent:
+
+| variable | default | meaning |
+|---|---|---|
+| `DOCKER_CODE_EGRESS_POLICY` | `allowlist` | `allowlist` or `open` — see [Two policies](#two-policies-allowlist-and-open) |
+| `DOCKER_CODE_ALLOW_DOMAINS` | *(empty)* | names or CIDRs to allow, comma or space separated |
+| `DOCKER_CODE_DENY_DOMAINS` | *(empty)* | names or CIDRs to refuse, under either policy |
+| `DOCKER_CODE_ALLOW_GITHUB` | `1` | `.github.com` and `.githubusercontent.com`, under `allowlist` |
+
 Deliberately **no** fixed subnet, unlike the mirror's `172.30.30.0/24`. Those ranges were pinned so
 they could be named in a route or a corporate firewall exception; an internal network has no route
 out, so there is nothing to name.
@@ -319,8 +453,12 @@ The gateway must also allow `CONNECT` to port 22, which the generated config doe
 | survives a CDN rotating addresses | no | yes |
 | external DNS | open (needed to build the list) | closed |
 | refused calls are logged | no | yes |
+| "the internet, but not our LAN" | no | yes — `EGRESS_POLICY=open` |
+| a blocklist under either policy | no | yes — `DENY_DOMAINS` |
 | extra containers | none | one per active agent |
 | git over SSH | works | needs a `ProxyCommand` |
 
 `restricted` remains the right choice for a session with `DIND=0` that wants no extra containers.
-`gateway` is the one to pick when the allowlist has to hold.
+`gateway` is the one to pick when the allowlist has to hold — and the only one of the two that can
+be loosened to "research freely, but stay off our network", because it is the only one that decides
+per request and can therefore refuse a name on the address it turns out to point at.

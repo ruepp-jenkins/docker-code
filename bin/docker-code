@@ -722,6 +722,18 @@ session_network() {
             die "DOCKER_CODE_NET must be one of: full, restricted, gateway, none"
             ;;
     esac
+
+    # Both knobs below are read by session_egress and nowhere else. Said out loud rather than left to
+    # docs/EGRESS.md, because a DENY_DOMAINS that quietly does nothing is the worst shape this could
+    # take: the list reads as applied, and the first thing it was meant to keep out is reachable.
+    if [ "$1" != "gateway" ]; then
+        [ -z "$(agent_knob DENY_DOMAINS "")" ] ||
+            warn "DOCKER_CODE_DENY_DOMAINS is a gateway setting and NET=$1 ignores it;" \
+                 "DOCKER_CODE_NET=gateway is what enforces it."
+        [ "$(agent_knob EGRESS_POLICY allowlist)" = "allowlist" ] ||
+            warn "DOCKER_CODE_EGRESS_POLICY is a gateway setting and NET=$1 ignores it;" \
+                 "DOCKER_CODE_NET=gateway is what enforces it."
+    fi
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -735,25 +747,48 @@ session_network() {
 # their networks instead of the session, and egress_proxy, the URL everything inside is pointed at.
 # ---------------------------------------------------------------------------------------------
 session_egress() {
-    local domains=()
+    local domains=() policy denied
 
     egress_check_pool
 
-    [ -n "${AGENT_DOMAINS}" ] ||
-        warn "agents/${AGENT_ID}/agent.env names no AGENT_DOMAINS, so ${AGENT_TITLE} will not reach" \
-             "its own API through the gateway"
-
-    # shellcheck disable=SC2206  # a space-separated list from agent.env is the documented format
-    domains=(${AGENT_DOMAINS} "${EGRESS_COMMON_DOMAINS[@]}")
-
-    # Only when there is an inner daemon to pull images and build them, matching how
-    # init-firewall.sh scopes the same two lists.
-    case "${DIND_MODE}" in
-        0|false|none) ;;
-        *) domains+=("${EGRESS_REGISTRY_DOMAINS[@]}" "${EGRESS_OS_PACKAGE_DOMAINS[@]}") ;;
+    # allowlist is the default because it is the narrower of the two: a session that meant to be open
+    # and is not says so at the first refusal, while the reverse is only noticed once something has
+    # already left.
+    policy="$(agent_knob EGRESS_POLICY allowlist)"
+    case "${policy}" in
+        allowlist|open) ;;
+        *) die "DOCKER_CODE_EGRESS_POLICY must be allowlist or open, not '${policy}'" ;;
     esac
 
-    [ "$(agent_knob ALLOW_GITHUB 1)" = "1" ] && domains+=("${EGRESS_GITHUB_DOMAINS[@]}")
+    # Comma or space separated, and taking names or CIDRs, exactly like ALLOW_DOMAINS. Applied under
+    # either policy: it is what carves a host out of a wildcard that was allowed as a whole.
+    denied="$(agent_knob DENY_DOMAINS "")"
+    denied="${denied//,/ }"
+
+    if [ "${policy}" = "allowlist" ]; then
+        [ -n "${AGENT_DOMAINS}" ] ||
+            warn "agents/${AGENT_ID}/agent.env names no AGENT_DOMAINS, so ${AGENT_TITLE} will not" \
+                 "reach its own API through the gateway"
+
+        # shellcheck disable=SC2206  # a space-separated list from agent.env is the documented format
+        domains=(${AGENT_DOMAINS} "${EGRESS_COMMON_DOMAINS[@]}")
+
+        # Only when there is an inner daemon to pull images and build them, matching how
+        # init-firewall.sh scopes the same two lists.
+        case "${DIND_MODE}" in
+            0|false|none) ;;
+            *) domains+=("${EGRESS_REGISTRY_DOMAINS[@]}" "${EGRESS_OS_PACKAGE_DOMAINS[@]}") ;;
+        esac
+
+        [ "$(agent_knob ALLOW_GITHUB 1)" = "1" ] && domains+=("${EGRESS_GITHUB_DOMAINS[@]}")
+    fi
+
+    # Under `open` none of the lists above is added, and the generated config is the shorter for it.
+    # They name public hosts, which that policy allows without being told; carrying them anyway would
+    # produce forty lines that decide nothing, in the one file where reading the policy off the page
+    # is the point. What is left is what the policy still needs: the shared services below, which sit
+    # on a local network it would otherwise refuse, and ALLOW_DOMAINS, which is how a user says
+    # "except this one server on my LAN".
 
     # The shared services, by the container name they answer to. In this mode the session has no
     # route to their networks — the gateway joins those instead — so the loopback bridge in
@@ -781,7 +816,7 @@ session_egress() {
     egress_proxy="$(egress_url "${AGENT_ID}")"
 
     if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
-        egress_start "${AGENT_ID}" "${domains[@]}" ||
+        egress_start "${AGENT_ID}" "${policy}" "${denied}" "${domains[@]}" ||
             die "the egress gateway for ${AGENT_ID} did not start, and DOCKER_CODE_NET=gateway" \
                 "must not fall back to unfiltered egress. Start with DOCKER_CODE_NET=restricted" \
                 "for the in-container firewall, or DOCKER_CODE_NET=full for no filtering."
@@ -1183,16 +1218,21 @@ cmd_registry() {
 # only place that says what a session tried to reach and what was refused.
 cmd_egress() {
     require_docker
-    local id container state
+    local id container state conf policy
 
     case "${1:-status}" in
         status)
-            printf '%-28s %-10s %s\n' GATEWAY STATE ALLOWLIST
+            printf '%-28s %-10s %-10s %s\n' GATEWAY STATE POLICY CONFIG
             for id in $(agent_ids) "${EGRESS_SERVICES_ID}"; do
                 container="$(egress_container "${id}")"
                 state="$(docker inspect -f '{{.State.Status}}' "${container}" 2>/dev/null || true)"
                 [ -n "${state}" ] || continue
-                printf '%-28s %-10s %s\n' "${container}" "${state}" "$(egress_dir "${id}")/squid.conf"
+                conf="$(egress_dir "${id}")/squid.conf"
+                # Read back out of the generated file rather than out of the environment: a gateway
+                # is shared by the sessions of its agent and keeps the policy of the newest start,
+                # which is not necessarily the one this shell would resolve.
+                policy="$(sed -n 's/^# policy: //p' "${conf}" 2>/dev/null | head -n 1)"
+                printf '%-28s %-10s %-10s %s\n' "${container}" "${state}" "${policy:-?}" "${conf}"
             done
             ;;
         stop)
@@ -1344,6 +1384,8 @@ Usage:
 Session knobs (prefix DOCKER_CODE_, or DOCKER_CODE_<AGENT>_ for one agent):
   YOLO=1                run without permission prompts
   NET=full|restricted|gateway|none  egress policy (default: full)
+  EGRESS_POLICY=allowlist|open    what NET=gateway allows (default: allowlist)
+  DENY_DOMAINS="host,10.0.0.0/8"  refused under either policy (NET=gateway)
   DIND=privileged|rootless|0      inner Docker (default: privileged)
   LOCAL=1               use the shared local models
   LOCAL_MODEL=<name>    which one (docker-code models list)
@@ -1358,7 +1400,7 @@ State lives in ${STORAGE_ROOT}:
   <agent>/    that agent's entire home directory inside its container
   models/     the weights every agent shares
   registry/   the Docker Hub pull-through cache
-  egress/     the generated allowlist per gateway
+  egress/     the generated policy per gateway
   shared/     opt-in, mounted into every agent at ~/shared
 
 Your real home directory is never mounted into a container. Full documentation: README.md,
