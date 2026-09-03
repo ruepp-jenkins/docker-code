@@ -35,13 +35,40 @@ def checkoutRepo() {
 // once rather than once per agent into the same workspace.
 def buildImage(String agentId, String arch, String platform) {
     withEnv(["AGENT_ID=${agentId}", "EXPECTED_PLATFORM=${platform}", "TEST_REPORT_SUFFIX=${arch}"]) {
-        // Bound here rather than in the pipeline's environment block, which would export the registry
-        // password into every sh step on every agent — the cleanup, the QEMU registration, the test
-        // suite — none of which log in. This is the only step in this function that does:
-        // start.sh calls scripts/docker_initialize.sh. The stash below deliberately stays outside.
-        withCredentials([string(credentialsId: 'DOCKER_API_PASSWORD',
-                                variable: 'DOCKER_API_PASSWORD')]) {
-            sh './scripts/start.sh'
+        // Two attempts, a minute apart, because what fails here is usually not the build. A Jenkins
+        // restart during `docker buildx build` kills the session to buildkitd ("received prior
+        // goaway ... graceful_stop") and takes the shared builder with it; a registry push can meet
+        // a transient 5xx. Running start.sh again answers all of them, because it is idempotent:
+        // docker_initialize.sh recreates a builder it no longer finds, BuildKit replays the test
+        // stage from cache, and pushing the same content by digest twice is a no-op. The minute is
+        // for the restart case, where the node has only just reconnected and its Docker daemon may
+        // still be coming up.
+        //
+        // A red test suite is retried too, and that is affordable: the cached test stage replays and
+        // base/Dockerfile's `verified` stage refuses again within seconds. An aborted build is not
+        // retried at all — `retry` rethrows the interruption rather than looping, so this does not
+        // fight the abortPrevious above.
+        //
+        // The counter, rather than a sleep inside a catch: this way the delay falls between the two
+        // attempts and not after the last one, which would hold the whole stage open for a minute
+        // after the outcome is already decided.
+        def attempt = 0
+        retry(2) {
+            attempt++
+            if (attempt > 1) {
+                echo "Build of ${agentId} (${arch}) failed; retrying once in 60s"
+                sleep time: 60, unit: 'SECONDS'
+            }
+
+            // Bound here rather than in the pipeline's environment block, which would export the
+            // registry password into every sh step on every agent — the cleanup, the QEMU
+            // registration, the test suite — none of which log in. This is the only step in this
+            // function that does: start.sh calls scripts/docker_initialize.sh. The stash below
+            // deliberately stays outside.
+            withCredentials([string(credentialsId: 'DOCKER_API_PASSWORD',
+                                    variable: 'DOCKER_API_PASSWORD')]) {
+                sh './scripts/start.sh'
+            }
         }
 
         // The image was pushed without a tag, so its digest is the only handle on it — and it is on
