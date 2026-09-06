@@ -859,6 +859,26 @@ egress_services_start() {
 
 egress_services_url() { egress_url "${EGRESS_SERVICES_ID}"; }
 
+# egress_services_join <network>
+#
+# egress_start attaches a gateway to two networks no shared service is on: its own internal one, and
+# the gateways' route out. A service is pointed at this one *by container name*, so without a network
+# in common the name does not resolve and every fetch dies at the proxy — a failure that reads like a
+# broken model name rather than a missing container. bin/docker-code does the same for the per-agent
+# gateway, which joins the mirror and model networks for the same reason.
+#
+# Idempotent through egress_connect, and worth calling even when the gateway was already up: it may
+# have been started for the registry mirror, which joins it to a different network than Ollama needs.
+#
+# A failure here means the service goes out directly rather than the session dying. This proxy is
+# advisory — see the block above — and handing a service a URL it cannot reach is strictly worse than
+# never pointing it at one.
+egress_services_join() {
+    egress_connect "$(egress_container "${EGRESS_SERVICES_ID}")" "$1" && return 0
+    warn "the shared-services gateway could not join $1; that service goes out directly"
+    return 1
+}
+
 # The services gateway outlives any one session — the mirror and Ollama are shared across agents and
 # are not torn down per session either — so it is stopped only when no session at all is left.
 # shellcheck disable=SC2317  # reached through the trap installed before the run, not by a call
@@ -897,11 +917,15 @@ egress_proxy_env() {
         --env "NO_PROXY=localhost,127.0.0.1" --env "no_proxy=localhost,127.0.0.1")
 }
 
-# egress_service_proxy <var-value>
+# egress_service_proxy <var-value> <network>
 #
 # Resolves DOCKER_CODE_REGISTRY_EGRESS / DOCKER_CODE_MODELS_EGRESS to the proxy URL a shared service
 # should use, printing nothing when it should go straight out. `1` starts the services gateway, a URL
 # is someone else's proxy and starts nothing, `0` is today's behaviour.
+#
+# The network is the one the calling service sits on, and only `1` uses it: a proxy someone else runs
+# is their problem to make reachable, while the gateway started here is reachable from nowhere until
+# it is joined. Callers pass it *after* creating that network — mirror_start and models_up both do.
 egress_service_proxy() {
     case "$1" in
         0|false|"")
@@ -912,6 +936,7 @@ egress_service_proxy() {
                 warn "could not start the shared-services gateway; that service goes out directly"
                 return 0
             }
+            egress_services_join "$2" || return 0
             egress_services_url
             ;;
         http://*|https://*)

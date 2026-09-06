@@ -157,7 +157,7 @@ models_start_ollama() {
     # the gateway's only useful call.
     local ollama_proxy=""
     if [ "${egress_mode:-0}" = "1" ]; then
-        ollama_proxy="$(egress_service_proxy "${DOCKER_CODE_MODELS_EGRESS:-1}")"
+        ollama_proxy="$(egress_service_proxy "${DOCKER_CODE_MODELS_EGRESS:-1}" "${MODELS_NETWORK}")"
     fi
     egress_proxy_env "${ollama_proxy}"
     # shellcheck disable=SC2154  # set by egress_proxy_env in lib/egress.sh, sourced alongside this
@@ -374,6 +374,7 @@ models_status() {
         echo "on disk:  $(du -sh "$(ollama_store)" 2>/dev/null | cut -f1)"
     fi
     echo "network:  ${MODELS_NETWORK}${MODELS_SUBNET:+ (${MODELS_SUBNET})}"
+    models_egress_status
     models_gpu_status
 
     # The endpoints and the key, printed rather than only documented.
@@ -395,6 +396,28 @@ models_status() {
         printf '  from the host: http://127.0.0.1:%s and http://127.0.0.1:%s\n' \
             "${OLLAMA_PORT}" "${LITELLM_PORT}"
     fi
+}
+
+# Silent unless something is actually routed, so the common case prints no line at all. When there is
+# a proxy, whether it is still *there* is the whole diagnosis: Ollama keeps the one it was created
+# with, the shared-services gateway goes away with the last session, and the symptom of that pair is
+# a pull that cannot resolve its own proxy.
+models_egress_status() {
+    local proxy gateway
+    proxy="$(models_ollama_egress)"
+    [ -n "${proxy}" ] || return 0
+
+    gateway="$(egress_container "${EGRESS_SERVICES_ID}")"
+    case "${proxy}" in
+        "http://${gateway}:"*)
+            if models_container_running "${gateway}"; then
+                echo "egress:   ${proxy}"
+            else
+                echo "egress:   ${proxy} (not running; a pull restarts it)"
+            fi
+            ;;
+        *)  echo "egress:   ${proxy} (DOCKER_CODE_MODELS_EGRESS)" ;;
+    esac
 }
 
 # Two different questions, both worth answering here: was the container *given* a GPU, and did Ollama
@@ -435,10 +458,62 @@ models_gpu_status() {
     fi
 }
 
+# The proxy the running Ollama was created with, or nothing when it goes out directly. Read back off
+# the label rather than resolved from the environment: a container keeps whatever it was created
+# with, and `docker-code models pull` is typed long after — and usually from a different shell than —
+# the session that created it.
+models_ollama_egress() {
+    local value
+    value="$(docker inspect -f "{{index .Config.Labels \"${MODELS_LABEL}.egress\"}}" \
+        "${OLLAMA_CONTAINER}" 2>/dev/null || true)"
+    # `direct` and an unlabelled container are the same answer here, and a case rather than a test
+    # because `set -e` makes a failing `[ ] && return` the exit status of the whole function.
+    case "${value}" in
+        direct|"") return 0 ;;
+    esac
+    printf '%s\n' "${value}"
+}
+
+# Ollama holds its HTTP_PROXY for as long as it runs, while the shared-services gateway is removed
+# with the last session. A pull typed the next morning is then a pull through a proxy that is no
+# longer there — Ollama fails to resolve docker-code-egress-services, which looks nothing like a
+# missing container and everything like a bad model name. Bring the gateway back before the exec.
+#
+# Only for the gateway this project starts itself: a URL from DOCKER_CODE_MODELS_EGRESS names a proxy
+# someone else runs, and there is nothing here to start.
+#
+# A warning rather than a failure, matching every other shared service in this file. The pull will
+# very likely fail anyway, but it fails saying what is wrong, and the remedy is named here.
+models_ensure_ollama_egress() {
+    local proxy gateway
+    proxy="$(models_ollama_egress)"
+    gateway="$(egress_container "${EGRESS_SERVICES_ID}")"
+
+    case "${proxy}" in
+        "http://${gateway}:"*) ;;
+        *) return 0 ;;
+    esac
+
+    if ! models_container_running "${gateway}"; then
+        egress_services_start || {
+            warn "Ollama fetches through ${proxy}, which is not running and would not start;"
+            warn "'docker-code models restart ollama' recreates it with direct egress"
+            return 0
+        }
+    fi
+
+    egress_services_join "${MODELS_NETWORK}" || true
+}
+
 models_exec_ollama() {
     if ! models_container_running "${OLLAMA_CONTAINER}"; then
         die "the model services are not running; start them with: docker-code models up"
     fi
+    # Only the subcommands that fetch. `list` and `rm` never leave the host, and starting a squid
+    # container so that a gateway-mode user can read a table would be a second of nothing.
+    case "$1" in
+        pull|run) models_ensure_ollama_egress ;;
+    esac
     docker exec -i "${OLLAMA_CONTAINER}" ollama "$@"
 }
 

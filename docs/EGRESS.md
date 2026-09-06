@@ -420,10 +420,31 @@ software, not agent-controlled code, and a pull-through registry can only fetch 
 it was configured with. What it buys is a bound on where they fetch from and a log of it — not
 containment of a hostile actor. Do not read it as more than that.
 
-Both settings apply only when a service is started **for a gateway-mode session**. A machine that
-never uses `gateway` gets no extra container and no change in behaviour. A service already running
-with the other setting is left alone with a warning rather than restarted mid-pull; `docker-code
-registry stop` applies it.
+The services gateway joins the network of every service it fronts — `docker-code-net` for Ollama,
+`docker-code-mirror` for the registry cache — because a service reaches it by container name and the
+gateway's own two networks are its internal one and the route out. Without that join the name does
+not resolve and the fetch dies at a proxy that was never reachable.
+
+Both settings apply when a service is started for a gateway-mode session **and** by `docker-code
+models up` / `docker-code registry start` under `DOCKER_CODE_NET=gateway`. Those commands take the
+global setting only: the shared containers belong to every agent, so there is no per-agent override
+to apply. A machine that never uses `gateway` gets no extra container and no change in behaviour. A
+service already running with the other setting is left alone with a warning rather than restarted
+mid-pull; `docker-code registry stop` applies it.
+
+### A pull after the last session ended
+
+The services gateway is removed when the last session closes, while Ollama keeps running with the
+`HTTP_PROXY` it was created with. `docker-code models pull` starts the gateway back up and rejoins it
+before it execs, so a pull typed the next morning works. `docker-code models status` shows the pair:
+
+```text
+network:  docker-code-net (172.30.31.0/24)
+egress:   http://docker-code-egress-services:3128 (not running; a pull restarts it)
+```
+
+If the gateway will not come back, the pull says so and names the way out — `docker-code models
+restart ollama` recreates Ollama with direct egress.
 
 ## Known limitation: git over SSH
 

@@ -769,6 +769,153 @@ EOF
     [[ "${output}" == *"[http://proxy.example:3128]"* ]]
 }
 
+@test "the shared-services gateway joins the network of the service it points at" {
+    # egress_start attaches a gateway to its own internal network and to the route out, and a shared
+    # service is on neither. The service is pointed at it by container name, so without this join the
+    # name does not resolve and every fetch dies at a proxy that was never reachable — which is what
+    # `docker-code models pull` under NET=gateway looked like.
+    make_stub docker 'case "$*" in *State.Running*) echo true ;; esac'
+    run bash -c "
+        STORAGE_ROOT='${STORAGE_ROOT}'
+        warn() { echo \"warn: \$*\" >&2; }
+        say() { :; }
+        ensure_image() { :; }
+        progress_tick() { :; }
+        progress_done() { :; }
+        die() { echo \"\$*\" >&2; exit 1; }
+        . '${REPO_ROOT}/lib/egress.sh'
+        egress_service_proxy 1 docker-code-net
+    "
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"http://docker-code-egress-services:3128"* ]]
+
+    local calls
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"network connect docker-code-net docker-code-egress-services"* ]] || {
+        echo "the gateway was never attached to the service's network, so its name cannot resolve:"
+        printf '%s\n' "${calls}"
+        return 1
+    }
+}
+
+@test "a shared-services gateway that cannot be joined leaves the service going out directly" {
+    # Handing back a URL anyway would point a service at a proxy it cannot reach, which fails every
+    # fetch. Direct egress is worse policy and better behaviour, and this one is advisory either way.
+    make_stub docker 'case "$*" in
+    "network inspect docker-code-net") exit 1 ;;
+    *State.Running*) echo true ;;
+esac'
+    run bash -c "
+        STORAGE_ROOT='${STORAGE_ROOT}'
+        warn() { echo \"warn: \$*\" >&2; }
+        say() { :; }
+        ensure_image() { :; }
+        progress_tick() { :; }
+        progress_done() { :; }
+        die() { echo \"\$*\" >&2; exit 1; }
+        . '${REPO_ROOT}/lib/egress.sh'
+        printf '[%s]\n' \"\$(egress_service_proxy 1 docker-code-net)\"
+    "
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"[]"* ]] || {
+        echo "a proxy URL was handed out for a gateway the service cannot reach: ${output}"
+        return 1
+    }
+}
+
+@test "models up under NET=gateway routes Ollama the way a session would" {
+    # egress_mode is set by session_network, which never runs on the models path. Without cmd_models
+    # resolving it too, the shared services end up proxied or direct depending on which command
+    # happened to create them first rather than on what was asked for.
+    make_stub docker 'case "$*" in
+    *State.Running*docker-code-egress-services*) echo true ;;
+    *State.Running*) echo false ;;
+esac'
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_NET=gateway
+    run "${REPO_ROOT}/bin/docker-code" models up
+    [ "${status}" -eq 0 ] || {
+        echo "models up failed: ${output}"
+        return 1
+    }
+
+    local calls
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"--env HTTPS_PROXY=http://docker-code-egress-services:3128"* ]] || {
+        echo "Ollama was created without the shared-services proxy under NET=gateway:"
+        printf '%s\n' "${calls}"
+        return 1
+    }
+    [[ "${calls}" == *"network connect docker-code-net docker-code-egress-services"* ]]
+}
+
+@test "models pull reattaches the gateway Ollama was created with" {
+    # Ollama keeps its HTTP_PROXY for as long as it runs; the services gateway is removed with the
+    # last session. A pull typed afterwards then fails to resolve docker-code-egress-services, which
+    # reads like a bad model name rather than a missing container.
+    make_stub docker 'case "$*" in
+    *Config.Labels*) echo "http://docker-code-egress-services:3128" ;;
+    *State.Running*) echo true ;;
+esac'
+    unset DOCKER_CODE_DRY_RUN
+    run "${REPO_ROOT}/bin/docker-code" models pull qwen3:14b
+    [ "${status}" -eq 0 ] || {
+        echo "models pull failed: ${output}"
+        return 1
+    }
+
+    local calls
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"network connect docker-code-net docker-code-egress-services"* ]] || {
+        echo "the pull ran without making the proxy reachable:"
+        printf '%s\n' "${calls}"
+        return 1
+    }
+    [[ "${calls}" == *"exec -i docker-code-ollama ollama pull qwen3:14b"* ]]
+}
+
+@test "a pull whose gateway is gone says so instead of failing at a name lookup" {
+    make_stub docker 'case "$*" in
+    *Config.Labels*) echo "http://docker-code-egress-services:3128" ;;
+    *State.Running*docker-code-ollama*) echo true ;;
+    *State.Running*) echo false ;;
+esac'
+    unset DOCKER_CODE_DRY_RUN
+    run "${REPO_ROOT}/bin/docker-code" models pull qwen3:14b
+    [ "${status}" -eq 0 ]
+
+    # It tried to bring the gateway back, and when that failed it named the way out rather than
+    # leaving Ollama to report a DNS error against a container nobody mentioned.
+    [[ "${output}" == *"egress gateway for services"* ]]
+    [[ "${output}" == *"models restart ollama"* ]] || {
+        echo "the warning does not say how to get pulling again: ${output}"
+        return 1
+    }
+    [[ "$(stub_calls docker)" == *"exec -i docker-code-ollama ollama pull qwen3:14b"* ]]
+}
+
+@test "a local models command does not start a proxy it has no use for" {
+    # `list` and `rm` never leave the host. Starting squid for them would charge a gateway-mode user
+    # a container start and a readiness wait to read a table.
+    make_stub docker 'case "$*" in
+    *Config.Labels*) echo "http://docker-code-egress-services:3128" ;;
+    *State.Running*docker-code-ollama*) echo true ;;
+    *State.Running*) echo false ;;
+esac'
+    unset DOCKER_CODE_DRY_RUN
+    run "${REPO_ROOT}/bin/docker-code" models list
+    [ "${status}" -eq 0 ]
+
+    local calls
+    calls="$(stub_calls docker)"
+    [[ "${calls}" == *"exec -i docker-code-ollama ollama list"* ]]
+    [[ "${calls}" != *"docker-code-egress-services"* ]] || {
+        echo "listing models touched the egress gateway:"
+        printf '%s\n' "${calls}"
+        return 1
+    }
+}
+
 @test "LiteLLM is never handed a proxy, which would break its only call" {
     # It reaches Ollama by container name and NO_PROXY covers loopback only, so a proxy would route
     # that call through a gateway with no reason to allow it.

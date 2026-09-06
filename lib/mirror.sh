@@ -162,7 +162,7 @@ mirror_start() {
     # their own egress. What it buys is a bound on where the cache fetches from, and a log of it.
     local mirror_proxy=""
     if [ "${egress_mode:-0}" = "1" ]; then
-        mirror_proxy="$(egress_service_proxy "${DOCKER_CODE_REGISTRY_EGRESS:-1}")"
+        mirror_proxy="$(egress_service_proxy "${DOCKER_CODE_REGISTRY_EGRESS:-1}" "${MIRROR_NETWORK}")"
     fi
     egress_proxy_env "${mirror_proxy}"
     # shellcheck disable=SC2154  # set by egress_proxy_env in lib/egress.sh, sourced alongside this

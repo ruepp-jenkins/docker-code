@@ -1172,8 +1172,23 @@ doctor_networks() {
     fi
 }
 
+# `models up` and `registry start` create the same containers a session would, so they have to
+# resolve egress the same way. egress_mode is otherwise set only by session_network, which never runs
+# on these paths — leaving the shared services proxied or direct depending on which command happened
+# to create them first, rather than on what was asked for.
+#
+# No agent_knob here, and deliberately so: these containers are shared by every agent and there is no
+# agent in scope to override anything, so only the global DOCKER_CODE_NET decides.
+service_egress_mode() {
+    egress_mode=0
+    [ "${DOCKER_CODE_NET:-full}" = "gateway" ] || return 0
+    egress_check_pool
+    egress_mode=1
+}
+
 cmd_models() {
     require_docker
+    service_egress_mode
     local action="${1:-status}"
     shift || true
 
@@ -1188,6 +1203,9 @@ cmd_models() {
         rm)     [ "$#" -gt 0 ] || die "usage: docker-code models rm <model>"
                 models_exec_ollama rm "$@" ;;
         run)    [ "$#" -gt 0 ] || die "usage: docker-code models run <model>"
+                # Not models_exec_ollama, which cannot hand over a TTY — but `ollama run` pulls a
+                # model it does not have, so it needs the same proxy that pull does.
+                models_ensure_ollama_egress
                 docker exec -it "${OLLAMA_CONTAINER}" ollama run "$@" ;;
         logs)   docker logs --tail 100 -f "${1:-${OLLAMA_CONTAINER}}" ;;
         *)      die "unknown: docker-code models ${action}" \
@@ -1197,6 +1215,7 @@ cmd_models() {
 
 cmd_registry() {
     require_docker
+    service_egress_mode
     case "${1:-status}" in
         start)  mirror_check_subnet; mirror_start && echo "mirror running at ${MIRROR_CONTAINER}:5000" ;;
         stop)   container_name=""; mirror_stop ;;
