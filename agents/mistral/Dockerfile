@@ -31,6 +31,7 @@ RUN set -eux; \
     rm -rf /root/.cache/pip
 
 COPY agents/mistral/agent.env /etc/docker-code/agent.env
+COPY agents/mistral/defaults/ /opt/docker-code/defaults/
 
 RUN set -eux; \
     env HOME=/root vibe --version; \

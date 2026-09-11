@@ -12,6 +12,7 @@ RUN set -eux; \
     npm cache clean --force
 
 COPY agents/gemini/agent.env /etc/docker-code/agent.env
+COPY agents/gemini/defaults/ /opt/docker-code/defaults/
 
 # Not under /opt/docker-code/defaults: that directory is seeded into the user's home, and this file
 # must never become part of their own configuration. It is read only when a session asks for a local

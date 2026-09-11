@@ -18,6 +18,11 @@ RUN set -eux; \
 
 COPY agents/cursor/agent.env /etc/docker-code/agent.env
 
+# No agents/cursor/defaults/ here on purpose: cursor-agent has no file-based global instructions.
+# AGENTS.md is read per-project, and "User Rules" live in the user's Cursor account rather than on
+# disk, so there is nowhere under the bind-mounted home to seed the "you have an inner Docker daemon"
+# note every other agent gets. If cursor-agent grows a home-directory instructions file, seed it here.
+
 RUN set -eux; \
     env HOME=/root cursor-agent --version; \
     rm -rf /root/.cursor /root/.config/cursor

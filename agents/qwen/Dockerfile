@@ -12,6 +12,7 @@ RUN set -eux; \
     npm cache clean --force
 
 COPY agents/qwen/agent.env /etc/docker-code/agent.env
+COPY agents/qwen/defaults/ /opt/docker-code/defaults/
 
 RUN set -eux; \
     env HOME=/root qwen --version; \

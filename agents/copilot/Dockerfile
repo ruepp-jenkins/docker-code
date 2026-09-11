@@ -12,6 +12,7 @@ RUN set -eux; \
     npm cache clean --force
 
 COPY agents/copilot/agent.env /etc/docker-code/agent.env
+COPY agents/copilot/defaults/ /opt/docker-code/defaults/
 
 # COPILOT_HOME replaces the whole ~/.copilot path. It is left at its default here on purpose: the
 # default is inside the bind-mounted home, so it persists without being named.
