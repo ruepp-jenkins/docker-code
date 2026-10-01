@@ -310,6 +310,8 @@ chmod 0755 "${PREFIX}"/scripts/*.sh 2>/dev/null || true
         echo "mode=remote"
         echo "repo=${REPO}"
         echo "ref=${REF}"
+        # What was installed, so the daily check can tell whether ${REF} has moved since.
+        echo "commit=$(git -C "${SOURCE}" rev-parse HEAD 2>/dev/null || true)"
     fi
     echo "install_dir=${INSTALL_DIR}"
     echo "prefix=${PREFIX}"

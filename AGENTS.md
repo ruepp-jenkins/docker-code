@@ -86,6 +86,15 @@ hard-code localhost. See [Local models](docs/LOCAL-MODELS.md) and
 degrade to a warning. A session that asked to be filtered and then runs unfiltered is worse than one
 that does not start, so `session_egress` dies where `session_mirror` warns.
 
+### Daily update check
+
+`lib/autoupdate.sh` runs at the start of `run_session`, once per calendar day per check: first
+docker-code itself (remote installations only, by comparing `git ls-remote` with the `commit=` that
+`install.sh` records in `.install-source`, then re-executing `$0` with the original arguments), then
+the agent's image just before the session starts. Each day is claimed with a marker created under
+noclobber in `~/docker-code/.auto-update/`, so concurrent starts cannot both run the installer.
+Like the shared services, every failure degrades to a warning, and a dry run checks nothing.
+
 ### Two egress mechanisms
 
 `DOCKER_CODE_NET` has two filtering modes, and they enforce differently:

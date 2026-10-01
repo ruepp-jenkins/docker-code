@@ -21,6 +21,12 @@ set -euo pipefail
 
 SELF_NAME="$(basename "$0")"
 
+# How this process was started, kept for the daily self-update: the updated command is started again
+# under the same name and with the same arguments (lib/autoupdate.sh). $0 rather than a resolved
+# path, because the wrapper name is what decides which agent runs.
+# shellcheck disable=SC2034  # read by lib/autoupdate.sh, which shellcheck does not follow
+SELF_INVOCATION="$0"
+
 warn() { echo "${SELF_NAME}: $*" >&2; }
 die() { echo "${SELF_NAME}: ERROR: $*" >&2; exit 1; }
 
@@ -144,7 +150,7 @@ SELF_PATH="$(resolve_self "$0")"
 DOCKER_CODE_ROOT="${DOCKER_CODE_ROOT:-$(cd -P "$(dirname "$(dirname "${SELF_PATH}")")" && pwd)}"
 export DOCKER_CODE_ROOT
 
-for lib in agents mirror models egress; do
+for lib in agents mirror models egress autoupdate; do
     [ -f "${DOCKER_CODE_ROOT}/lib/${lib}.sh" ] ||
         die "cannot find lib/${lib}.sh under ${DOCKER_CODE_ROOT}; set DOCKER_CODE_ROOT to the checkout"
     # shellcheck source=/dev/null
@@ -278,6 +284,13 @@ agent_image() {
 run_session() {
     local agent_id="$1"
     shift
+
+    # First, before anything is decided from the code that is running now: when this replaces
+    # docker-code, it starts the session again from the new one and does not return. Not in a dry
+    # run, which promises to print a command and change nothing.
+    if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
+        auto_update_self ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
+    fi
 
     require_docker
     agent_load "${agent_id}" || exit 1
@@ -466,6 +479,17 @@ run_session() {
     fi
 
     run+=("${IMAGE}" "$@")
+
+    # Last before the start, once every setting that could still refuse the session has been read:
+    # nobody should wait for a download only to be told their configuration is wrong.
+    #
+    # DOCKER_CODE_AUTO_UPDATE=0 switches off both daily checks, and is only the default here, so the
+    # per-agent spelling can still turn this one back on for a single agent.
+    if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ] &&
+        [ "$(agent_knob AUTO_UPDATE_IMAGE "${DOCKER_CODE_AUTO_UPDATE:-1}")" != "0" ] &&
+        [ "${pull_policy}" != "never" ]; then
+        auto_update_image "${IMAGE}"
+    fi
 
     # The seam the test suite uses: everything above is pure command construction, so it can be
     # checked without a Docker daemon.
@@ -1408,12 +1432,17 @@ Session knobs (prefix DOCKER_CODE_, or DOCKER_CODE_<AGENT>_ for one agent):
   DIND=privileged|rootless|0      inner Docker (default: privileged)
   LOCAL=1               use the shared local models
   LOCAL_MODEL=<name>    which one (docker-code models list)
+  AUTO_UPDATE_IMAGE=0   do not pull a newer image on the first start of the day
   SHELL=1               drop into bash instead of the agent
   SHARED=1              mount ~/${STATE_DIR_NAME}/shared into the session
   MOUNT="/a:/a:ro"      extra bind mounts, whitespace separated
   ENV="GH_TOKEN,FOO"    extra variables to pass through
   HOME=<abs path>       where state lives (default: \$HOME/${STATE_DIR_NAME})
   DRY_RUN=1             print the docker run command instead of running it
+
+The first session of each day checks for updates (README.md, Updates):
+  DOCKER_CODE_AUTO_UPDATE=0       check neither docker-code nor the images
+  DOCKER_CODE_AUTO_UPDATE_SELF=0  leave docker-code itself alone
 
 State lives in ${STORAGE_ROOT}:
   <agent>/    that agent's entire home directory inside its container
@@ -1431,6 +1460,9 @@ EOF
 # ==============================================================================================
 # Dispatch
 # ==============================================================================================
+# A plain global, for the same bash-3.2 reason as extra_args in run_session.
+ORIGINAL_ARGS=("$@")
+
 if [ "${SELF_NAME}" != "docker-code" ]; then
     agent="$(agent_for_wrapper "${SELF_NAME}")" ||
         die "no agent is registered for the name '${SELF_NAME}'. Known wrappers:" \

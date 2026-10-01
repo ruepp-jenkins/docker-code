@@ -116,6 +116,7 @@ Everything via environment variable so that it composes itself with the wrapper.
 | `ENV="GH_TOKEN,FOO"` | | pass through additional variables |
 | `GITCONFIG=1` / `SSH=1` | `0` | Pass through `~/.gitconfig` (ro) or the SSH agent |
 | `REGISTRY_MIRROR=1` | `0` | Pull-through cache before Docker Hub ([REGISTRY.md](docs/REGISTRY.md)) |
+| `AUTO_UPDATE_IMAGE=0` | `1` | do not check for a newer image on the first start of the day ([Updates](#updates)) |
 | `DRY_RUN=1` | `0` | output the `docker run` instead of executing it |
 
 ```bash
@@ -169,6 +170,8 @@ that every agent shares, so a per-agent spelling would promise something it coul
 | `DOCKER_CODE_MODELS_NETWORK` | `docker-code-net` | name of that network |
 | `DOCKER_CODE_EGRESS_OUT_NETWORK` | `docker-code-egress-out` | the gateways' shared route out |
 | `DOCKER_CODE_HOME` | `~/docker-code` | where all state lives |
+| `DOCKER_CODE_AUTO_UPDATE` | `1` | `0` switches off the daily update check — docker-code and images alike ([Updates](#updates)) |
+| `DOCKER_CODE_AUTO_UPDATE_SELF` | `1` | `0` leaves docker-code itself alone and still checks the images |
 
 The rest of the shared-service settings — images, ports, GPU, upstreams, credentials — are documented
 where they apply: [REGISTRY.md](docs/REGISTRY.md), [LOCAL-MODELS.md](docs/LOCAL-MODELS.md) and
@@ -288,6 +291,41 @@ docker-code build claude      # Build locally instead of pulling
 
 docker-code self-update       # Update docker-code, agent definitions, and wrappers
 ```
+
+### Automatically, once a day
+
+The first session of each day checks both by itself, before the agent starts:
+
+1. **docker-code** — has the branch it was installed from moved? Then it runs the installer, and the
+   session is started again by the new version with exactly the arguments you typed.
+2. **the agent's image** — is a newer one published? Then it is pulled.
+
+Every later start that day skips both checks, and so does each agent's image once it has been checked
+(the markers are in `~/docker-code/.auto-update/`). A failed check is a warning, never a reason not to
+start: offline, you get the agent you already have, and the next check is tomorrow.
+
+```bash
+export DOCKER_CODE_AUTO_UPDATE=0                # no automatic updates at all
+export DOCKER_CODE_AUTO_UPDATE_SELF=0           # docker-code only by hand; images still daily
+export DOCKER_CODE_AUTO_UPDATE_IMAGE=0          # images only by hand; docker-code still daily
+export DOCKER_CODE_CODEX_AUTO_UPDATE_IMAGE=0    # keep one agent on the image it has
+```
+
+Deliberately left alone:
+
+- an installation made with `--local`, and a checkout: they follow a working tree, which is updated
+  when you decide to (`docker-code self-update`, `git pull`), not every morning in whatever state it
+  is in;
+- an installation pinned to a commit (`--ref <sha>`), which has asked not to move;
+- an installation you may not write to — a `--system` one run as a normal user. It says once a day
+  that an update is available, and whoever installed it runs `docker-code self-update`;
+- an image built on this machine (`docker-code build`), recognizable by having no registry digest,
+  which a pull would silently replace with the published one;
+- `DOCKER_CODE_PULL=never` and `DOCKER_CODE_DRY_RUN=1`.
+
+The installer's output from an automatic update is in `~/docker-code/.auto-update/self-update.log`.
+
+### Where self-update updates from
 
 `self-update` knows where your installation comes from: `install.sh` stores this in `.install-source` when installing. An installation from the network gets the same branch again, one built with `--local` updates from exactly the checkout - no silent switching to GitHub. Move another stand:
 
