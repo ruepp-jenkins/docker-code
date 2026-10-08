@@ -53,6 +53,9 @@ next with `\`.
 | `AGENT_REMOTE_ARGS` | — | Flags prepended when `DOCKER_CODE_REMOTE=1`, unless the user typed the flag or its `--no-` form |
 | `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon; see [Remote control](../docs/REMOTE.md) |
 
+Setting either remote key also gives the agent a `<wrapper>-remote` command. Add its symlink with
+`ln -s docker-code bin/<wrapper>-remote`; the installer derives it on its own.
+
 ### `AGENT_LOCAL_MODE`
 
 | Mode | Target | Use when the tool... |

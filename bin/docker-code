@@ -306,6 +306,14 @@ run_session() {
     DETACH="$(agent_knob DETACH 0)"
     REMOTE="$(agent_knob REMOTE 0)"
 
+    # claude-docker-remote: remote control on, and in the background unless DETACH says otherwise —
+    # a session meant for the phone is no use if it ends with the terminal that started it. A command
+    # rather than only the knobs, because a knob in .bashrc would turn every session into one.
+    if [ "${REMOTE_COMMAND:-0}" = "1" ]; then
+        REMOTE=1
+        DETACH="$(agent_knob DETACH 1)"
+    fi
+
     # `privileged` rather than the rootless auto-detection, because it is the mode that works on
     # every host tried so far. Rootless needs unprivileged user namespaces the host may refuse, and a
     # data root the overlay driver can actually use — neither is a given, and both fail as "the
@@ -1505,6 +1513,8 @@ docker-code — run TUI coding agents in containers, one persistent directory ea
 
 Usage:
   <agent>-docker [args...]        start that agent (claude-docker, gemini-docker, …)
+  <agent>-docker-remote [args]    the same in the background, with remote control from the
+                                  vendor's app (claude, codex, copilot; docs/REMOTE.md)
   docker-code run <agent> [args]  the same thing, spelled out
   docker-code list                the agents this installation knows
   docker-code build [agent...]    build images locally (default: base + all agents)
@@ -1559,6 +1569,19 @@ EOF
 # ==============================================================================================
 # A plain global, for the same bash-3.2 reason as extra_args in run_session.
 ORIGINAL_ARGS=("$@")
+
+# <wrapper>-remote is a wrapper of its own only for agents that have remote control; for the others
+# it falls through to the lookup below and fails there with the list of names that do exist.
+REMOTE_COMMAND=0
+case "${SELF_NAME}" in
+    *-remote)
+        if agent="$(agent_for_wrapper "${SELF_NAME%-remote}")" && agent_load "${agent}" &&
+            [ "$(agent_remote_wrapper)" = "${SELF_NAME}" ]; then
+            REMOTE_COMMAND=1
+            run_session "${agent}" "$@"
+        fi
+        ;;
+esac
 
 if [ "${SELF_NAME}" != "docker-code" ]; then
     agent="$(agent_for_wrapper "${SELF_NAME}")" ||

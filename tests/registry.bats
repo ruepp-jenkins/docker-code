@@ -206,3 +206,28 @@ EOF
         }
     done
 }
+
+@test "exactly the agents with remote control get a -remote command, and it is in bin/" {
+    run bash -c ". '${REPO_ROOT}/lib/agents.sh'; agent_wrappers"
+    [ "${status}" -eq 0 ]
+    for id in $(all_agent_ids); do
+        wrapper="$(agent_field "${id}" AGENT_WRAPPER)"
+        if [ -n "$(agent_field "${id}" AGENT_REMOTE_ARGS)$(agent_field "${id}" AGENT_REMOTE_START)" ]; then
+            [[ "${output}" == *"${id} ${wrapper}-remote"* ]] || { echo "${id} has no ${wrapper}-remote"; return 1; }
+            [ "$(readlink "${REPO_ROOT}/bin/${wrapper}-remote")" = "docker-code" ] || {
+                echo "bin/${wrapper}-remote is missing; run: ln -s docker-code bin/${wrapper}-remote"; return 1
+            }
+        else
+            [[ "${output}" != *"${wrapper}-remote"* ]] || { echo "${id} got a -remote command"; return 1; }
+            [ ! -e "${REPO_ROOT}/bin/${wrapper}-remote" ] || { echo "bin/${wrapper}-remote should not exist"; return 1; }
+        fi
+    done
+}
+
+@test "the installer links the same -remote commands the registry derives" {
+    # install.sh cannot source lib/agents.sh and repeats the rule; the two must not drift apart.
+    expected="$(bash -c ". '${REPO_ROOT}/lib/agents.sh'; agent_wrappers" | awk '{print $2}' | sort)"
+    actual="$(sed -n '/^wrapper_names() {/,/^}/p' "${REPO_ROOT}/install.sh" > "${BATS_TEST_TMPDIR}/wn.sh"
+        bash -c "die() { echo \"\$*\" >&2; exit 1; }; . '${BATS_TEST_TMPDIR}/wn.sh'; wrapper_names '${REPO_ROOT}'" | sort)"
+    [ "${expected}" = "${actual}" ] || { diff <(echo "${expected}") <(echo "${actual}"); return 1; }
+}

@@ -172,6 +172,11 @@ wrapper_names() {
         printf '%s\n' "${wrapper}"
         # shellcheck disable=SC2086  # a space-separated list is the documented format
         for a in ${aliases}; do printf '%s\n' "${a}"; done
+        # The same rule as agent_remote_wrapper in lib/agents.sh: an agent with remote control also
+        # gets <wrapper>-remote. Not sourced from there, because this runs before lib/ is installed.
+        if grep -qE '^AGENT_REMOTE_(ARGS|START)=.' "${file}"; then
+            printf '%s-remote\n' "${wrapper}"
+        fi
     done
 }
 

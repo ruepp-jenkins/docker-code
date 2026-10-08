@@ -197,15 +197,28 @@ agent_for_wrapper() {
     return 1
 }
 
+# agent_remote_wrapper
+#
+# The second command an agent with remote control gets: claude-docker-remote. Derived rather than
+# declared, because what it does is the same for every agent and a name that could be spelled
+# differently per agent is one more thing to look up. Prints nothing for an agent without remote
+# control, so no command exists that could only ever refuse.
+agent_remote_wrapper() {
+    [ -n "${AGENT_REMOTE_ARGS}${AGENT_REMOTE_START}" ] || return 0
+    printf '%s-remote\n' "${AGENT_WRAPPER}"
+}
+
 # Every wrapper name the installer should create, one per line, in `<id> <wrapper>` form.
 agent_wrappers() {
-    local id alias
+    local id alias remote
     for id in $(agent_ids); do
         agent_load "${id}" >/dev/null 2>&1 || continue
         printf '%s %s\n' "${id}" "${AGENT_WRAPPER}"
         for alias in ${AGENT_ALIASES}; do
             printf '%s %s\n' "${id}" "${alias}"
         done
+        remote="$(agent_remote_wrapper)"
+        [ -z "${remote}" ] || printf '%s %s\n' "${id}" "${remote}"
     done
 }
 

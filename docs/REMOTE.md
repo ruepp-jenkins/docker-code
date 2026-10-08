@@ -11,8 +11,18 @@ window onto it.
 | GitHub Copilot CLI | github.com, GitHub Mobile | GitHub account with Copilot | generally available |
 | OpenAI Codex CLI | ChatGPT app | ChatGPT account with Codex access | experimental from the CLI |
 
-Gemini CLI, Qwen Code, Mistral Vibe, OpenCode, Cursor and Kiro have no remote control.
-`DOCKER_CODE_REMOTE=1` says so for them and starts the session anyway.
+Each of the three has a command of its own for it, next to the normal one:
+
+```bash
+claude-docker-remote      codex-docker-remote      copilot-docker-remote
+```
+
+It starts the agent **in the background with remote control switched on**, takes the same arguments
+and settings as the normal wrapper, and leaves that one untouched — `claude-docker` stays a plain
+session in your terminal.
+
+Gemini CLI, Qwen Code, Mistral Vibe, OpenCode, Cursor and Kiro have no remote control, and so no
+`-remote` command.
 
 ## How it works here
 
@@ -21,13 +31,15 @@ session. No port is published, nothing on the host listens, and the network mode
 under `NET=restricted` and `NET=gateway` the hosts these tools use are already on the allowlists.
 
 The one thing remote control does need is a process that keeps running. A docker-code session ends
-with its terminal, so there are two ways to keep it alive:
+with its terminal, which is why the `-remote` commands start in the background and print the
+container name:
 
 ```bash
-DOCKER_CODE_DETACH=1 claude-docker     # start in the background; prints the container name
+$ claude-docker-remote
+claude-docker-remote: Claude Code is running in the background as claude-docker_1.
 ```
 
-or press **Ctrl-P Ctrl-Q** in a session that is already running — the terminal is released, the
+A session that is already running gets there with **Ctrl-P Ctrl-Q**: the terminal is released, the
 container keeps going. From then on:
 
 ```bash
@@ -40,12 +52,14 @@ The machine itself has to stay on and online. A detached session also keeps the 
 uses — the registry mirror, the egress gateways — running after it ends; the next foreground session
 to end last switches them off, or `docker-code registry stop` and `docker-code egress stop` do.
 
-`DOCKER_CODE_REMOTE=1` switches remote control on at start, with each tool's own mechanism. Like
-every setting it has a per-agent form, so this belongs in a `.bashrc` without touching the others:
+Behind the command are two ordinary settings, for the rare case that the command does not fit:
 
-```bash
-export DOCKER_CODE_CLAUDE_REMOTE=1
-```
+- `DOCKER_CODE_REMOTE=1` switches remote control on, with each tool's own mechanism (each agent's
+  section below says which).
+- `DOCKER_CODE_DETACH=1` starts any session in the background, with or without remote control.
+  `DOCKER_CODE_DETACH=0 claude-docker-remote` keeps a remote session in the terminal instead.
+
+Neither belongs in a `.bashrc`: exported there, it would apply to every session of that agent.
 
 ---
 
@@ -83,14 +97,14 @@ export DOCKER_CODE_CLAUDE_REMOTE=1
 Three ways, all of them in a session that keeps running:
 
 ```bash
-# An interactive session that is also reachable from the app
-DOCKER_CODE_DETACH=1 DOCKER_CODE_REMOTE=1 claude-docker
+# An interactive session that is also reachable from the app (adds --remote-control)
+claude-docker-remote
 
 # Name it, so you find it in the list on the phone
-DOCKER_CODE_DETACH=1 claude-docker --remote-control "docker-code"
+claude-docker-remote --remote-control "docker-code"
 
 # Server mode: no local conversation, sessions are started from the app
-DOCKER_CODE_DETACH=1 claude-docker remote-control --name "docker-code"
+claude-docker-remote remote-control --name "docker-code"
 ```
 
 In a session that is already running, `/remote-control` (or `/rc`) does the same — then
@@ -133,10 +147,10 @@ Upstream documentation: [Remote Control](https://code.claude.com/docs/en/remote-
 ### Use
 
 ```bash
-DOCKER_CODE_DETACH=1 DOCKER_CODE_REMOTE=1 copilot-docker
+copilot-docker-remote
 ```
 
-`DOCKER_CODE_REMOTE=1` adds `--remote`. In a running session, `/remote on` does the same. The CLI
+The command adds `--remote`. In a running session, `/remote on` does the same. The CLI
 then shows a link and a QR code; `/remote` shows them again later.
 
 Open the link, scan the code with GitHub Mobile, or find the session on github.com: a workspace that
@@ -144,7 +158,7 @@ is a GitHub repository lists it in that repository's **Agents** tab, any other d
 [github.com/copilot/agents](https://github.com/copilot/agents). From there you can steer the running
 turn, send new messages, switch modes and answer permission requests.
 
-`--no-remote` on the command line wins over `DOCKER_CODE_REMOTE=1`.
+`--no-remote` on the command line wins over the `--remote` the command would add.
 
 ### When it does not connect
 
@@ -175,10 +189,10 @@ Remote control in Codex is not a flag on the TUI but a daemon, the shared app-se
 joins by default:
 
 ```bash
-DOCKER_CODE_DETACH=1 DOCKER_CODE_REMOTE=1 codex-docker
+codex-docker-remote
 ```
 
-`DOCKER_CODE_REMOTE=1` runs `codex remote-control start` before the TUI starts. If that fails — not
+The command runs `codex remote-control start` before the TUI starts. If that fails — not
 signed in, for example — the session prints a warning and starts anyway. Attach and pair the phone:
 
 ```bash
@@ -193,7 +207,7 @@ Without a TUI, `codex remote-control` runs the daemon in the foreground, which i
 is the server mode:
 
 ```bash
-DOCKER_CODE_DETACH=1 codex-docker remote-control
+codex-docker-remote remote-control
 ```
 
 ### When it does not connect
@@ -216,5 +230,9 @@ and never in front of a subcommand from `AGENT_YOLO_SKIP`:
   its `--no-` form.
 - `AGENT_REMOTE_START` — a subcommand of `AGENT_BIN` run before the agent, for tools whose remote
   control is a daemon.
+
+An agent that sets either of them gets `<wrapper>-remote` automatically: `agent_wrappers` in
+`lib/agents.sh` and `wrapper_names` in `install.sh` derive it, and the checkout needs the symlink
+`ln -s docker-code bin/<wrapper>-remote`, which `tests/registry.bats` asks for.
 
 See [Adding an agent](../ai/adding-an-agent.md).

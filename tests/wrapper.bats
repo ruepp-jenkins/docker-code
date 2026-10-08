@@ -408,3 +408,30 @@ dry() {
         esac
     done
 }
+
+@test "the -remote command starts in the background with remote control on" {
+    dry claude-docker-remote
+    [[ "${output}" == *"--detach --tty"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_REMOTE=1"* ]]
+    [[ "${output}" == *"ruepp/docker-code-claude:test"* ]]
+}
+
+@test "the -remote command leaves the plain wrapper alone" {
+    dry claude-docker
+    [[ "${output}" != *"--detach"* ]]
+    [[ "${output}" != *"DOCKER_CODE_REMOTE"* ]]
+}
+
+@test "the -remote command can still be kept in the foreground" {
+    export DOCKER_CODE_CLAUDE_DETACH=0
+    dry claude-docker-remote
+    [[ "${output}" != *"--detach"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_REMOTE=1"* ]]
+}
+
+@test "a -remote name for an agent without remote control is refused" {
+    ln -s "${REPO_ROOT}/bin/docker-code" "${BATS_TEST_TMPDIR}/gemini-docker-remote"
+    run "${BATS_TEST_TMPDIR}/gemini-docker-remote"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"no agent is registered for the name 'gemini-docker-remote'"* ]]
+}
