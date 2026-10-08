@@ -111,7 +111,7 @@ Everything via environment variable so that it composes itself with the wrapper.
 | `LOCAL=1` | `0` | use the common local models |
 | `LOCAL_MODEL=<name>` | | which (`docker-code models list`) |
 | `DETACH=1` | `0` | start the session in the background ([Background sessions](#background-sessions-and-remote-control)) |
-| `REMOTE=1` | `0` | enable the agent's remote control from its web or mobile app |
+| `REMOTE=1` | `0` | enable the agent's remote control from its web or mobile app ([REMOTE.md](docs/REMOTE.md)) |
 | `SHELL=1` | `0` | instead of the agent a bash in the container |
 | `SHARED=1` | `0` | Mount `~/docker-code/shared` under `~/shared` |
 | `MOUNT="/a:/a:ro /b:/b"` | | additional bind mounts |
@@ -265,32 +265,16 @@ docker-code attach claude-docker_1   # back into the TUI; Ctrl-P Ctrl-Q leaves i
 docker stop claude-docker_1          # end it
 ```
 
-That is what remote control needs: three agents can be driven from their vendor's web or mobile app,
-and only for as long as the process here keeps running. `DOCKER_CODE_REMOTE=1` switches it on at
-start, with each tool's own mechanism:
-
-| Agent | What `REMOTE=1` does | Driven from | Needs |
-|---|---|---|---|
-| Claude Code | `--remote-control` | claude.ai/code, Claude app | claude.ai subscription login, no API key or `LOCAL=1` |
-| Codex | `codex remote-control start` before the TUI (experimental upstream) | ChatGPT app | ChatGPT sign-in |
-| Copilot | `--remote` | GitHub web and mobile | GitHub sign-in |
-
-Gemini CLI, Qwen Code, Mistral Vibe, OpenCode, Cursor and Kiro have no remote control, and the
-setting says so. In Claude Code, `/remote-control` (`/rc`) inside a running session does the same
-without the setting, and `claude-docker remote-control` starts its server mode:
+That is what remote control needs: Claude Code, Codex and Copilot can be driven from their vendor's
+web or mobile app, and only for as long as the process here keeps running. `DOCKER_CODE_REMOTE=1`
+switches it on at start, with each tool's own mechanism:
 
 ```bash
 DOCKER_CODE_DETACH=1 DOCKER_CODE_REMOTE=1 claude-docker
-DOCKER_CODE_DETACH=1 claude-docker remote-control --name "my project"
 ```
 
-The connection is outbound only, so no port is published. Under `NET=restricted` and `NET=gateway`
-the vendors' hosts are already on the allowlists. Claude Code turns remote control off when
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
-
-A detached session keeps the shared services it uses — the registry mirror, the egress gateways —
-running after it ends, until the next session that ends last switches them off, or
-`docker-code registry stop` and `docker-code egress stop` do.
+Sign-in, pairing the phone and what to do when it does not connect, per agent:
+[REMOTE.md](docs/REMOTE.md).
 
 ---
 
@@ -314,6 +298,7 @@ On the **GPU** instead of the CPU: NVIDIA is recognized, AMD is one line — `DO
 
 - **[LOCAL-MODELS.md](docs/LOCAL-MODELS.md)** — the shared model store, Ollama and the gateway.
 - **[REGISTRY.md](docs/REGISTRY.md)** — Images, tags and the pull-through cache.
+- **[REMOTE.md](docs/REMOTE.md)** — background sessions and remote control from web and mobile.
 
 ```bash
 docker-code list       # List available agents

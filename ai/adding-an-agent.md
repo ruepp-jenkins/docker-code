@@ -51,7 +51,7 @@ next with `\`.
 | `AGENT_LOCAL_ARGS` | — | Additional local-model arguments; `%m` is the model name |
 | `AGENT_NOTE` | — | One-sentence limitation; required when `AGENT_LOCAL_MODE=none` |
 | `AGENT_REMOTE_ARGS` | — | Flags prepended when `DOCKER_CODE_REMOTE=1`, unless the user typed the flag or its `--no-` form |
-| `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon |
+| `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon; see [Remote control](../docs/REMOTE.md) |
 
 ### `AGENT_LOCAL_MODE`
 

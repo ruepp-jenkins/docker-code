@@ -1550,7 +1550,7 @@ State lives in ${STORAGE_ROOT}:
 
 Your real home directory is never mounted into a container. Full documentation: README.md,
 AGENTS.md (AI project instructions), ai/adding-an-agent.md, docs/LOCAL-MODELS.md,
-docs/REGISTRY.md, docs/EGRESS.md.
+docs/REGISTRY.md, docs/EGRESS.md, docs/REMOTE.md.
 EOF
 }
 
