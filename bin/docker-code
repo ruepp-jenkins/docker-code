@@ -299,10 +299,12 @@ run_session() {
     # like it means: local models for Qwen, and the cloud for the others. That is the setting people
     # actually want in a shell startup file, where a blanket DOCKER_CODE_LOCAL=1 would also redirect
     # the agent they pay a subscription for.
-    local IMAGE NET_MODE YOLO DIND_MODE
+    local IMAGE NET_MODE YOLO DIND_MODE DETACH REMOTE
     IMAGE="$(agent_image)"
     NET_MODE="$(agent_knob NET full)"
     YOLO="$(agent_knob YOLO 0)"
+    DETACH="$(agent_knob DETACH 0)"
+    REMOTE="$(agent_knob REMOTE 0)"
 
     # `privileged` rather than the rootless auto-detection, because it is the mode that works on
     # every host tried so far. Rootless needs unprivileged user namespaces the host may refuse, and a
@@ -364,7 +366,12 @@ run_session() {
 
     # Interactive only when there is a terminal on both ends. Without the check,
     # `claude-docker -p "x" | jq` would get a TTY allocated and jq would receive terminal escapes.
-    if [ -t 0 ] && [ -t 1 ]; then
+    #
+    # A detached session always gets one, whoever started it: it is a TUI waiting for someone to
+    # `docker-code attach` to it later, and that terminal does not exist yet to be asked.
+    if [ "${DETACH}" = "1" ]; then
+        run+=(--detach --tty)
+    elif [ -t 0 ] && [ -t 1 ]; then
         run+=(--tty)
     fi
     run+=(--interactive)
@@ -428,12 +435,17 @@ run_session() {
         [ -z "${AGENT_NOTE}" ] || warn "${AGENT_NOTE}"
     fi
 
+    session_remote_notes
+
     # The container user is adjusted to these at startup, so files the agent writes into the
     # bind-mounted workspace belong to you on the host rather than to uid 1000.
     run+=(--env "DOCKER_CODE_HOST_UID=$(id -u)" --env "DOCKER_CODE_HOST_GID=$(id -g)")
 
     # Behaviour switches the container side reads.
     run+=(--env "DOCKER_CODE_YOLO=${YOLO}")
+    if [ "${REMOTE}" = "1" ]; then
+        run+=(--env "DOCKER_CODE_REMOTE=1")
+    fi
     run+=(--env "DOCKER_CODE_NET=${NET_MODE}")
     run+=(--env "DOCKER_CODE_DIND=${DIND_MODE}")
 
@@ -501,13 +513,18 @@ run_session() {
 
     # A trap rather than a line after the run: a session ended with Ctrl-C should turn the mirror and
     # the gateway off just as a session that exited normally does.
-    if [ "${manage_mirror}" = "1" ] || [ "${manage_egress}" = "1" ]; then
+    #
+    # Not for a detached session, whose `docker run` returns the moment it has started: the services
+    # it uses are left running, and whichever foreground session ends last turns them off — the
+    # counting in mirror_stop and egress_stop sees a detached session like any other.
+    if [ "${DETACH}" != "1" ] && { [ "${manage_mirror}" = "1" ] || [ "${manage_egress}" = "1" ]; }; then
         trap session_cleanup EXIT INT TERM
     fi
 
-    # Nothing to retry, nothing to switch off afterwards: hand the process over and be gone.
+    # Nothing to retry, nothing to switch off afterwards, nothing to say: hand the process over and
+    # be gone.
     if [ -z "${container_name}" ] && [ "${manage_mirror}" = "0" ] &&
-        [ "${manage_egress}" = "0" ]; then
+        [ "${manage_egress}" = "0" ] && [ "${DETACH}" != "1" ]; then
         exec "${run[@]}"
     fi
 
@@ -522,6 +539,7 @@ run_session() {
 
     if [ -z "${container_name}" ] || [ "${status}" -ne 125 ] ||
         ! taken_names | grep -qxF "${container_name}"; then
+        [ "${DETACH}" != "1" ] || [ "${status}" -ne 0 ] || detached_notice "${container_name}"
         exit "${status}"
     fi
 
@@ -547,7 +565,52 @@ run_session() {
     # Still not exec: the mirror trap has to survive this second attempt as well.
     status=0
     "${unnamed[@]}" || status=$?
+    [ "${DETACH}" != "1" ] || [ "${status}" -ne 0 ] || detached_notice ""
     exit "${status}"
+}
+
+# What a detached start leaves you with is a container ID on stdout and no idea what to do with it.
+detached_notice() {
+    local name="$1"
+    if [ -n "${name}" ]; then
+        say "${AGENT_TITLE} is running in the background as ${name}."
+        say "  attach:  docker-code attach ${name}   (leave it running again: Ctrl-P Ctrl-Q)"
+        say "  stop:    docker stop ${name}"
+    else
+        say "${AGENT_TITLE} is running in the background in an unnamed container (docker-code sessions)."
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------
+# Remote control
+#
+# Several agents can be driven from their vendor's web or mobile app while they run here. What that
+# takes from docker-code is little: the flag or daemon start in agent.env, applied by launch.sh, and
+# a process that outlives the terminal, which DOCKER_CODE_DETACH or Ctrl-P Ctrl-Q provide. Everything
+# here is advice — none of it can make the vendor accept a session, so none of it refuses one.
+# ---------------------------------------------------------------------------------------------
+session_remote_notes() {
+    [ "${REMOTE}" = "1" ] || return 0
+
+    if [ -z "${AGENT_REMOTE_ARGS}" ] && [ -z "${AGENT_REMOTE_START}" ]; then
+        warn "${AGENT_TITLE} has no remote control, so DOCKER_CODE_REMOTE does nothing here."
+        return 0
+    fi
+
+    if [ "${NET_MODE}" = "none" ]; then
+        warn "remote control needs the vendor's service, and DOCKER_CODE_NET=none has no network."
+    fi
+
+    # Every implementation so far relays through the vendor and wants the vendor's own sign-in; a
+    # session pointed at a local model server has neither.
+    if [ "$(agent_knob LOCAL 0)" = "1" ]; then
+        warn "remote control relays through ${AGENT_TITLE}'s vendor and is likely refused with local models."
+    fi
+
+    if [ "${DETACH}" != "1" ]; then
+        say "remote control lasts as long as this session: Ctrl-P Ctrl-Q leaves it running in the"
+        say "background, DOCKER_CODE_DETACH=1 starts it there."
+    fi
 }
 
 taken_names() {
@@ -559,6 +622,13 @@ taken_names() {
 # unconditionally is correct.
 # shellcheck disable=SC2317  # reached through the trap installed before the run, not by a call
 session_cleanup() {
+    # Ctrl-P Ctrl-Q detaches the terminal and returns `docker run` while the session carries on, and
+    # stop functions that discount this container by name would pull the gateway out from under it.
+    if [ -n "${container_name:-}" ] &&
+        [ "$(docker inspect -f '{{.State.Running}}' "${container_name}" 2>/dev/null || true)" = "true" ]; then
+        return 0
+    fi
+
     # Each step names itself, but only if it takes long enough to notice — see with_progress. On a
     # healthy daemon the whole of this is under a second and says nothing at all, which is the
     # behaviour worth having when you have just closed an agent and want your shell back.
@@ -1079,6 +1149,29 @@ cmd_list() {
     done
 }
 
+# Sessions are found by the label every one of them carries, which is also what the mirror and the
+# gateways count — so this lists exactly what keeps those alive.
+cmd_sessions() {
+    require_docker
+    docker ps --filter "label=${MIRROR_LABEL}=session" \
+        --format "table {{.Names}}\t{{.Label \"${MIRROR_LABEL}.agent\"}}\t{{.RunningFor}}\t{{.Status}}"
+}
+
+cmd_attach() {
+    require_docker
+    local name="${1:-}" running
+    if [ -z "${name}" ]; then
+        running="$(docker ps --filter "label=${MIRROR_LABEL}=session" --format '{{.Names}}')"
+        case "$(printf '%s' "${running}" | grep -c .)" in
+            0) die "no session is running" ;;
+            1) name="${running}" ;;
+            *) die "several sessions are running; name one:" "$(printf '%s' "${running}" | tr '\n' ' ')" ;;
+        esac
+    fi
+    say "attached to ${name}; Ctrl-P Ctrl-Q leaves it running"
+    exec docker attach "${name}"
+}
+
 cmd_doctor() {
     local rc=0
 
@@ -1421,6 +1514,8 @@ Usage:
                                   | logs
   docker-code registry <cmd>      start | stop | status  (Docker Hub pull-through cache)
   docker-code egress <cmd>        status | stop [agent...] | logs <agent>  (NET=gateway proxies)
+  docker-code sessions            the sessions running right now, foreground or detached
+  docker-code attach [name]       reattach a detached session (Ctrl-P Ctrl-Q detaches again)
   docker-code doctor              what is installed, valid and present
   docker-code help                this text
 
@@ -1433,6 +1528,8 @@ Session knobs (prefix DOCKER_CODE_, or DOCKER_CODE_<AGENT>_ for one agent):
   LOCAL=1               use the shared local models
   LOCAL_MODEL=<name>    which one (docker-code models list)
   AUTO_UPDATE_IMAGE=0   do not pull a newer image on the first start of the day
+  DETACH=1              start the session in the background (docker-code attach)
+  REMOTE=1              enable the agent's remote control from its web/mobile app
   SHELL=1               drop into bash instead of the agent
   SHARED=1              mount ~/${STATE_DIR_NAME}/shared into the session
   MOUNT="/a:/a:ro"      extra bind mounts, whitespace separated
@@ -1487,6 +1584,8 @@ case "${1:-help}" in
     models)    shift; cmd_models "$@" ;;
     registry)  shift; cmd_registry "$@" ;;
     egress)    shift; cmd_egress "$@" ;;
+    sessions|ps) cmd_sessions ;;
+    attach)    shift; cmd_attach "$@" ;;
     doctor)    cmd_doctor ;;
     help|-h|--help) cmd_help ;;
     *)

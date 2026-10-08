@@ -75,6 +75,8 @@ AGENT_YOLO_SKIP="$(agent_get AGENT_YOLO_SKIP)"
 AGENT_PERMISSION_FLAGS="$(agent_get AGENT_PERMISSION_FLAGS)"
 AGENT_ROOT_ENV="$(agent_get AGENT_ROOT_ENV)"
 AGENT_LOCAL_ARGS="$(agent_get AGENT_LOCAL_ARGS)"
+AGENT_REMOTE_ARGS="$(agent_get AGENT_REMOTE_ARGS)"
+AGENT_REMOTE_START="$(agent_get AGENT_REMOTE_START)"
 
 [ -n "${AGENT_PERMISSION_FLAGS}" ] || AGENT_PERMISSION_FLAGS="${AGENT_YOLO_ARGS}"
 
@@ -138,6 +140,41 @@ if [ -n "${DOCKER_CODE_LOCAL_URL:-}" ] && [ -n "${AGENT_LOCAL_ARGS}" ] \
     local_args="${AGENT_LOCAL_ARGS//%m/${DOCKER_CODE_LOCAL_MODEL}}"
     # shellcheck disable=SC2206  # a flag list, deliberately word-split
     args+=(${local_args})
+fi
+
+# Remote control: driving the session from the vendor's web or mobile app. The tool keeps an outbound
+# connection to the vendor and needs nothing from this container but the process staying alive, which
+# is DOCKER_CODE_DETACH's business on the host side, not this script's.
+#
+# A --remote or --no-remote the user typed is a decision about this one session, and the same rule as
+# for permission flags applies: never override it with the opposite flag in front.
+has_remote_flag() {
+    local arg flag
+    for arg in "$@"; do
+        for flag in ${AGENT_REMOTE_ARGS}; do
+            case "${arg}" in
+                "${flag}"|"${flag}"=*|"--no-${flag#--}"|"--no-${flag#--}"=*) return 0 ;;
+            esac
+        done
+    done
+    return 1
+}
+
+if [ "${DOCKER_CODE_REMOTE:-0}" = "1" ] && ! is_subcommand "${1:-}"; then
+    # Some tools serve remote control from a daemon of their own that the interactive client then
+    # joins, rather than from a flag on the client. Started before the exec, because after it there
+    # is no shell left to start anything. A failure is the tool's to explain — typically a missing
+    # sign-in — and the session is still worth having locally, so it warns rather than stops.
+    if [ -n "${AGENT_REMOTE_START}" ]; then
+        # shellcheck disable=SC2086  # a subcommand plus its flags, deliberately word-split
+        "${AGENT_BIN}" ${AGENT_REMOTE_START} ||
+            echo "docker-code[${AGENT_ID}]: '${AGENT_BIN} ${AGENT_REMOTE_START}' failed; starting the session anyway" >&2
+    fi
+
+    if [ -n "${AGENT_REMOTE_ARGS}" ] && ! has_remote_flag "$@"; then
+        # shellcheck disable=SC2206  # a flag list, deliberately word-split
+        args+=(${AGENT_REMOTE_ARGS})
+    fi
 fi
 
 args+=("$@")

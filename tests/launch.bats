@@ -180,3 +180,60 @@ EOF
     run bash "${LAUNCH}" mcp list
     [ "$(args_line)" = "mcp list" ]
 }
+
+# ---------------------------------------------------------------------------------------------
+# Remote control
+# ---------------------------------------------------------------------------------------------
+@test "remote control prepends the agent's own flag only when asked for" {
+    use_agent claude
+    run bash "${LAUNCH}" -c
+    [ "$(args_line)" = "-c" ]
+
+    export DOCKER_CODE_REMOTE=1
+    run bash "${LAUNCH}" -c
+    [ "$(args_line)" = "--remote-control -c" ]
+}
+
+@test "a remote flag the user typed, or its --no- form, is not doubled or contradicted" {
+    use_agent copilot
+    export DOCKER_CODE_REMOTE=1
+    run bash "${LAUNCH}" --no-remote
+    [ "$(args_line)" = "--no-remote" ]
+
+    use_agent claude
+    run bash "${LAUNCH}" --remote-control "my project"
+    [ "$(args_line)" = "--remote-control my project" ]
+}
+
+@test "remote control stays out of subcommands, including the agent's own server mode" {
+    use_agent claude
+    export DOCKER_CODE_REMOTE=1 DOCKER_CODE_YOLO=1
+    run bash "${LAUNCH}" remote-control --name x
+    [ "$(args_line)" = "remote-control --name x" ]
+}
+
+@test "a daemon-style remote control is started before the agent" {
+    use_agent codex
+    export DOCKER_CODE_REMOTE=1
+    run bash "${LAUNCH}"
+    [ "${status}" -eq 0 ]
+    [ "$(stub_calls codex)" = "$(printf 'remote-control start\n')" ]
+}
+
+@test "a failing remote-control start warns and still starts the agent" {
+    cp "${REPO_ROOT}/agents/codex/agent.env" "${AGENT_ENV}"
+    # shellcheck disable=SC2016  # the body runs in the stub, not here
+    make_stub codex '[ "$1" = "remote-control" ] && exit 3; echo "ARGS: $*"'
+    export DOCKER_CODE_REMOTE=1
+    run bash "${LAUNCH}" -m o3
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"starting the session anyway"* ]]
+    [ "$(args_line)" = "-m o3" ]
+}
+
+@test "agents without remote control are left alone" {
+    use_agent gemini
+    export DOCKER_CODE_REMOTE=1
+    run bash "${LAUNCH}" -p hi
+    [ "$(args_line)" = "-p hi" ]
+}

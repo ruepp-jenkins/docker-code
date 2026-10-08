@@ -359,3 +359,52 @@ dry() {
     dry claude-docker
     [[ "${output}" == *"--volume ${DOCKER_CODE_HOME}/shared:/home/agent/shared"* ]]
 }
+
+# ---------------------------------------------------------------------------------------------
+# Background sessions and remote control
+# ---------------------------------------------------------------------------------------------
+@test "a session runs in the foreground unless detached" {
+    dry claude-docker
+    [[ "${output}" != *"--detach"* ]]
+
+    export DOCKER_CODE_CLAUDE_DETACH=1
+    dry claude-docker
+    [[ "${output}" == *"--detach --tty"* ]]
+    dry qwen-docker
+    [[ "${output}" != *"--detach"* ]]
+}
+
+@test "remote control is passed as a switch, not as a flag the wrapper invents" {
+    export DOCKER_CODE_REMOTE=1 DOCKER_CODE_DETACH=1
+    dry claude-docker
+    [[ "${output}" == *"--env DOCKER_CODE_REMOTE=1"* ]]
+    [[ "${output}" != *"--remote-control"* ]]
+}
+
+@test "remote control on an agent that has none says so" {
+    export DOCKER_CODE_REMOTE=1
+    run "${REPO_ROOT}/bin/gemini-docker"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"has no remote control"* ]]
+}
+
+@test "remote control in the foreground points at detaching" {
+    export DOCKER_CODE_REMOTE=1
+    run "${REPO_ROOT}/bin/claude-docker"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Ctrl-P Ctrl-Q"* ]]
+
+    export DOCKER_CODE_DETACH=1
+    run "${REPO_ROOT}/bin/claude-docker"
+    [[ "${output}" != *"Ctrl-P Ctrl-Q"* ]]
+}
+
+@test "every agent that offers remote control has a way to switch it on, and only those do" {
+    for id in $(all_agent_ids); do
+        flags="$(agent_field "${id}" AGENT_REMOTE_ARGS)$(agent_field "${id}" AGENT_REMOTE_START)"
+        case "${id}" in
+            claude|codex|copilot) [ -n "${flags}" ] || { echo "${id} lost its remote control"; return 1; } ;;
+            *) [ -z "${flags}" ] || { echo "${id} claims remote control: ${flags}"; return 1; } ;;
+        esac
+    done
+}

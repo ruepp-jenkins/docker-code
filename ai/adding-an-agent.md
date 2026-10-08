@@ -41,7 +41,7 @@ next with `\`.
 | `AGENT_HOSTNAME` | `AGENT_ID` | Container hostname |
 | `AGENT_ALIASES` | — | Additional space-separated wrapper names |
 | `AGENT_YOLO_ARGS` | — | Arguments prepended when `DOCKER_CODE_YOLO=1` |
-| `AGENT_YOLO_SKIP` | — | Subcommands that must not receive YOLO arguments, such as `mcp` or `login` |
+| `AGENT_YOLO_SKIP` | — | Subcommands that must not receive YOLO, local-model or remote-control arguments, such as `mcp` or `login` |
 | `AGENT_PERMISSION_FLAGS` | `AGENT_YOLO_ARGS` | User-supplied flags that suppress YOLO injection |
 | `AGENT_ROOT_ENV` | — | Variables set when the container runs as root, such as `IS_SANDBOX=1` |
 | `AGENT_ENV_VARS` | — | Variables passed through from the host |
@@ -50,6 +50,8 @@ next with `\`.
 | `AGENT_LOCAL_ENV` | — | Semicolon-separated `NAME=value` entries; `%u` is the gateway URL and `%m` the model |
 | `AGENT_LOCAL_ARGS` | — | Additional local-model arguments; `%m` is the model name |
 | `AGENT_NOTE` | — | One-sentence limitation; required when `AGENT_LOCAL_MODE=none` |
+| `AGENT_REMOTE_ARGS` | — | Flags prepended when `DOCKER_CODE_REMOTE=1`, unless the user typed the flag or its `--no-` form |
+| `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon |
 
 ### `AGENT_LOCAL_MODE`
 
