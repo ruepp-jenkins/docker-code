@@ -152,6 +152,8 @@ has_remote_flag() {
     local arg flag
     for arg in "$@"; do
         for flag in ${AGENT_REMOTE_ARGS}; do
+            # %n is the session name, not a flag anyone could have typed.
+            [ "${flag}" != "%n" ] || continue
             case "${arg}" in
                 "${flag}"|"${flag}"=*|"--no-${flag#--}"|"--no-${flag#--}"=*) return 0 ;;
             esac
@@ -171,9 +173,20 @@ if [ "${DOCKER_CODE_REMOTE:-0}" = "1" ] && ! is_subcommand "${1:-}"; then
             echo "docker-code[${AGENT_ID}]: '${AGENT_BIN} ${AGENT_REMOTE_START}' failed; starting the session anyway" >&2
     fi
 
+    # %n in the list is the session name the host chose (DOCKER_CODE_NAME, or the directory), for a
+    # tool that shows one in its app. Replaced word by word after the split rather than in the string
+    # before it, so that a name with a space in it stays one argument — and dropped when there is no
+    # name, so the flag falls back to whatever the tool does on its own.
     if [ -n "${AGENT_REMOTE_ARGS}" ] && ! has_remote_flag "$@"; then
         # shellcheck disable=SC2206  # a flag list, deliberately word-split
-        args+=(${AGENT_REMOTE_ARGS})
+        remote_words=(${AGENT_REMOTE_ARGS})
+        for word in "${remote_words[@]}"; do
+            if [ "${word}" = "%n" ]; then
+                [ -z "${DOCKER_CODE_SESSION_NAME:-}" ] || args+=("${DOCKER_CODE_SESSION_NAME}")
+            else
+                args+=("${word}")
+            fi
+        done
     fi
 fi
 

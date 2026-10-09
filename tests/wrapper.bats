@@ -435,3 +435,307 @@ dry() {
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"no agent is registered for the name 'gemini-docker-remote'"* ]]
 }
+
+# ---------------------------------------------------------------------------------------------
+# Named remote sessions, restart policy and compose
+# ---------------------------------------------------------------------------------------------
+@test "a remote session is named after the directory it starts in" {
+    dry claude-docker-remote
+    [[ "${output}" == *"--name claude-docker-remote_workspace "* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_SESSION_NAME=workspace "* ]]
+    # Its own inner Docker store: it outlives the numbered sessions that share slot 1's.
+    [[ "${output}" == *"--volume docker-code-claude_remote_workspace:/var/lib/docker"* ]]
+}
+
+@test "DOCKER_CODE_NAME names the session, and the container gets a name Docker accepts" {
+    export DOCKER_CODE_NAME="My Project!"
+    dry claude-docker-remote
+    [[ "${output}" == *"--name claude-docker-remote_my-project "* ]]
+    [[ "${output}" == *"DOCKER_CODE_SESSION_NAME=My\\ Project\\!"* ]]
+}
+
+@test "sessions without remote control keep their numbered names" {
+    export DOCKER_CODE_NAME=ignored
+    dry claude-docker
+    [[ "${output}" == *"--name claude-docker_1"* ]]
+    [[ "${output}" != *"SESSION_NAME"* ]]
+}
+
+@test "a remote session in the background restarts unless stopped, and is not removed" {
+    dry claude-docker-remote
+    [[ "${output}" == *"docker run --init --restart unless-stopped "* ]]
+    [[ "${output}" != *"--rm"* ]]
+
+    dry claude-docker
+    [[ "${output}" == *"docker run --rm --init "* ]]
+    [[ "${output}" != *"--restart"* ]]
+}
+
+@test "DOCKER_CODE_RESTART=no gives a remote session --rm back" {
+    export DOCKER_CODE_RESTART=no
+    dry claude-docker-remote
+    [[ "${output}" == *"docker run --rm --init "* ]]
+    [[ "${output}" != *"--restart"* ]]
+}
+
+@test "a restart policy for a session in the foreground is refused with a warning, not applied" {
+    export DOCKER_CODE_RESTART=always
+    run "${REPO_ROOT}/bin/claude-docker"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"DOCKER_CODE_RESTART applies to sessions in the background"* ]]
+    [[ "${output}" == *"--rm --init"* ]]
+    [[ "${output}" != *"--restart"* ]]
+}
+
+@test "an unknown restart policy is refused" {
+    export DOCKER_CODE_RESTART=sometimes
+    run "${REPO_ROOT}/bin/claude-docker-remote"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"DOCKER_CODE_RESTART must be"* ]]
+}
+
+# A docker stub whose `inspect` reports the given state for the session name, and the label of a
+# docker-code session unless told otherwise.
+stub_existing_session() {
+    local state="$1" label="${2-session}"
+    make_stub docker "case \"\$1\" in
+    inspect) case \"\$3\" in
+        *State.Status*) echo ${state} ;;
+        *Labels*) echo ${label} ;;
+    esac ;;
+esac"
+}
+
+@test "a remote session already running under its name is not started twice" {
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_AUTO_UPDATE=0
+    stub_existing_session running
+    run "${REPO_ROOT}/bin/claude-docker-remote"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"claude-docker-remote_workspace is already running"* ]]
+    [[ "${output}" == *"docker-code attach claude-docker-remote_workspace"* ]]
+    ! stub_calls docker | grep -q '^run '
+}
+
+@test "a stopped remote session under the name is replaced" {
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_AUTO_UPDATE=0
+    stub_existing_session exited
+    run "${REPO_ROOT}/bin/claude-docker-remote"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"replacing the stopped session claude-docker-remote_workspace"* ]]
+    stub_calls docker | grep -qx 'rm claude-docker-remote_workspace'
+    stub_calls docker | grep -q '^run .*--name claude-docker-remote_workspace'
+}
+
+@test "a container under the name that is not a session is left alone" {
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_AUTO_UPDATE=0
+    stub_existing_session exited ""
+    run "${REPO_ROOT}/bin/claude-docker-remote"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"is not a docker-code session"* ]]
+    ! stub_calls docker | grep -q '^rm '
+}
+
+@test "docker-code compose prints a remote session that restarts" {
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'name: "workspace"'* ]]
+    [[ "${output}" == *'container_name: "claude-docker-remote_workspace"'* ]]
+    [[ "${output}" == *'restart: "unless-stopped"'* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_REMOTE=1"'* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_SESSION_NAME=workspace"'* ]]
+    [[ "${output}" == *"- \"${WORKSPACE}:${WORKSPACE}\""* ]]
+    [[ "${output}" == *'  docker-code-claude_remote_workspace:'* ]]
+    [[ "${output}" != *"__DOCKER_CODE_"* ]]
+}
+
+@test "docker-code compose names variables but never writes their values" {
+    export ANTHROPIC_API_KEY=sk-secret-value
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'- "ANTHROPIC_API_KEY"'* ]]
+    [[ "${output}" != *"sk-secret-value"* ]]
+}
+
+@test "docker-code compose escapes what compose would otherwise interpolate" {
+    export DOCKER_CODE_NAME='cost $HOME "quoted"'
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'DOCKER_CODE_SESSION_NAME=cost $$HOME \"quoted\""'* ]]
+    [[ "${output}" == *'container_name: "claude-docker-remote_cost-home-quoted"'* ]]
+}
+
+@test "docker-code compose refuses what a compose file cannot carry" {
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout gemini
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"has no remote control"* ]]
+
+    export DOCKER_CODE_RUN_ARGS="--memory 4g"
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"'--memory' has no translation"* ]]
+}
+
+@test "docker-code compose leaves out the registry mirror docker-code would have to start" {
+    export DOCKER_CODE_REGISTRY_MIRROR=1
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"leaves it out"* ]]
+    [[ "${output}" != *"DOCKER_CODE_MIRROR_URL"* ]]
+}
+
+@test "sessions of agents with remote control point at a compose template, others do not" {
+    dry claude-docker
+    [[ "${output}" == *"--env DOCKER_CODE_COMPOSE_TEMPLATE=/home/agent/.docker-code/compose-"*".yml"* ]]
+    dry gemini-docker
+    [[ "${output}" != *"DOCKER_CODE_COMPOSE_TEMPLATE"* ]]
+}
+
+@test "under NET=gateway the compose file brings its own gateway, on the launcher's topology" {
+    export DOCKER_CODE_NET=gateway HTTP_PROXY=http://corporate:8080
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    # The session: only the internal network, pointed at the gateway service, after it is healthy.
+    [[ "${output}" == *'      - "egress-internal"
+    depends_on:
+      egress:
+        condition: service_healthy'* ]]
+    [[ "${output}" == *'- "HTTPS_PROXY=http://egress:3128"'* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_PROXY=http://egress:3128"'* ]]
+    # The shell's proxy by name would replace the gateway in compose; it must not be listed again.
+    [[ "${output}" != *'- "HTTP_PROXY"'* ]]
+    [[ "${output}" != *"corporate"* ]]
+    # The gateway: both networks, its policy inline, restarting with the session.
+    [[ "${output}" == *'  egress:
+    image: "ubuntu/squid:'* ]]
+    [[ "${output}" == *'container_name: "claude-docker-remote_workspace-egress"'* ]]
+    [[ "${output}" == *'  egress-internal:
+    internal: true'* ]]
+    [[ "${output}" == *'      acl allowed_domains dstdomain '*'api.anthropic.com'* ]]
+    [[ "${output}" == *'      http_access deny all'* ]]
+    [ "$(printf '%s\n' "${output}" | grep -c 'restart: "unless-stopped"')" -eq 2 ]
+    # Nothing of the launcher's own gateway, which egress_start would remove from under it.
+    [[ "${output}" != *"docker-code-egress-claude"* ]]
+}
+
+@test "the compose gateway follows the egress policy and joins the model network for local models" {
+    export DOCKER_CODE_NET=gateway DOCKER_CODE_EGRESS_POLICY=open DOCKER_CODE_LOCAL=1
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"# policy: open"* ]]
+    [[ "${output}" == *'      - "egress-out"
+      - "docker-code-net"'* ]]
+    [[ "${output}" == *'  docker-code-net:
+    name: "docker-code-net"
+    external: true'* ]]
+}
+
+@test "docker-code compose writes compose.yml and will not replace one unasked" {
+    run "${REPO_ROOT}/bin/docker-code" compose claude
+    [ "${status}" -eq 0 ]
+    grep -q 'container_name: "claude-docker-remote_workspace"' "${WORKSPACE}/compose.yml"
+    [[ "${output}" == *"docker-code attach claude-docker-remote_workspace"* ]]
+
+    echo "keep me" >"${WORKSPACE}/compose.yml"
+    run "${REPO_ROOT}/bin/docker-code" compose claude
+    [ "${status}" -ne 0 ]
+    [ "$(cat "${WORKSPACE}/compose.yml")" = "keep me" ]
+
+    run "${REPO_ROOT}/bin/docker-code" compose --force claude
+    [ "${status}" -eq 0 ]
+    grep -q 'restart: "unless-stopped"' "${WORKSPACE}/compose.yml"
+}
+
+@test "docker-code compose asks whether to use the shell's settings, and keeps them on yes" {
+    export DOCKER_CODE_YOLO=1
+    run "${REPO_ROOT}/bin/docker-code" compose --ask --stdout claude <<<"$(printf 'y\nmy name\n')"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"DOCKER_CODE_YOLO=1"* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_YOLO=1"'* ]]
+    [[ "${output}" == *'container_name: "claude-docker-remote_my-name"'* ]]
+}
+
+@test "docker-code compose asks for the important settings when the shell's are declined" {
+    export DOCKER_CODE_YOLO=1 DOCKER_CODE_CLAUDE_DIND=rootless
+    # decline, name, network, policy, extra domains, YOLO, inner Docker, restart
+    answers="$(printf 'n\nproj\ngateway\nopen\nexample.org\nn\n0\nalways\n')"
+    run "${REPO_ROOT}/bin/docker-code" compose --ask --stdout claude <<<"${answers}"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'- "DOCKER_CODE_YOLO=0"'* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_DIND=0"'* ]]
+    [[ "${output}" != *"privileged: true"* ]]
+    [[ "${output}" == *'restart: "always"'* ]]
+    [[ "${output}" == *"# policy: open"* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_ALLOW_DOMAINS=example.org"'* ]]
+    [[ "${output}" == *'container_name: "claude-docker-remote_proj"'* ]]
+}
+
+@test "docker-code compose asks again on an answer that is not one of the choices" {
+    # A file, not a here-string: $(…) would strip the trailing empty answers that take the defaults.
+    printf '\nnowhere\nnone\n\n\n\n' >"${BATS_TEST_TMPDIR}/answers"
+    run "${REPO_ROOT}/bin/docker-code" compose --ask --stdout claude <"${BATS_TEST_TMPDIR}/answers"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"one of: full restricted gateway none"* ]]
+    [[ "${output}" == *'network_mode: "none"'* ]]
+}
+
+@test "docker-code compose stops rather than guessing when the answers run out" {
+    run "${REPO_ROOT}/bin/docker-code" compose --ask --stdout claude </dev/null
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"--yes"* ]]
+}
+
+@test "the template a session leaves becomes the same file docker-code compose prints" {
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_AUTO_UPDATE=0
+    run "${REPO_ROOT}/bin/claude-docker"
+    [ "${status}" -eq 0 ]
+    template="$(stub_calls docker | grep -o 'DOCKER_CODE_COMPOSE_TEMPLATE=[^ ]*' | head -n 1)"
+    template="${DOCKER_CODE_HOME}/claude/${template#DOCKER_CODE_COMPOSE_TEMPLATE=/home/agent/}"
+    [ -s "${template}" ]
+    grep -q '__DOCKER_CODE_SLUG__' "${template}"
+
+    # Inside the session: the /remote skill, with a name of its own.
+    DOCKER_CODE_COMPOSE_TEMPLATE="${template}" run "${REPO_ROOT}/image/compose.sh" "Side Project"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"claude-docker-remote_side-project"* ]]
+
+    export DOCKER_CODE_DRY_RUN=1 DOCKER_CODE_NAME="Side Project"
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    diff <(printf '%s\n' "${output}" | grep -v '^docker-code:') "${WORKSPACE}/compose.yml"
+}
+
+@test "a gateway session's template carries the gateway into the compose file" {
+    unset DOCKER_CODE_DRY_RUN
+    export DOCKER_CODE_AUTO_UPDATE=0 DOCKER_CODE_NET=gateway
+    # egress_start needs a gateway that comes up; the stub reports it running and ready.
+    make_stub docker 'case "$1" in inspect) echo true ;; esac'
+    run "${REPO_ROOT}/bin/claude-docker"
+    template="$(stub_calls docker | grep -o 'DOCKER_CODE_COMPOSE_TEMPLATE=[^ ]*' | head -n 1)"
+    [ -n "${template}" ]
+    template="${DOCKER_CODE_HOME}/claude/${template#DOCKER_CODE_COMPOSE_TEMPLATE=/home/agent/}"
+    grep -q '^  egress:$' "${template}"
+    grep -q 'HTTPS_PROXY=http://egress:3128' "${template}"
+}
+
+@test "the /remote skill's command will not overwrite a compose.yml unasked" {
+    printf 'name: "x"\n' >"${BATS_TEST_TMPDIR}/template.yml"
+    echo "keep me" >"${WORKSPACE}/compose.yml"
+    DOCKER_CODE_COMPOSE_TEMPLATE="${BATS_TEST_TMPDIR}/template.yml" run "${REPO_ROOT}/image/compose.sh"
+    [ "${status}" -ne 0 ]
+    [ "$(cat "${WORKSPACE}/compose.yml")" = "keep me" ]
+
+    DOCKER_CODE_COMPOSE_TEMPLATE="${BATS_TEST_TMPDIR}/template.yml" run "${REPO_ROOT}/image/compose.sh" --force
+    [ "${status}" -eq 0 ]
+    [ "$(cat "${WORKSPACE}/compose.yml")" = 'name: "x"' ]
+}
+
+@test "the /remote skill's command explains a session without a template" {
+    run "${REPO_ROOT}/image/compose.sh"
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"without a compose template"* ]]
+    [ ! -e "${WORKSPACE}/compose.yml" ]
+}

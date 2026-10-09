@@ -194,6 +194,29 @@ EOF
     [ "$(args_line)" = "--remote-control -c" ]
 }
 
+@test "the session name follows the remote flag as one argument, spaces and all" {
+    use_agent claude
+    export DOCKER_CODE_REMOTE=1 DOCKER_CODE_SESSION_NAME="my project"
+    make_stub claude 'for a in "$@"; do echo "ARG: [$a]"; done'
+    run bash "${LAUNCH}" -c
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s\n' "${output}" | sed -n 's/^ARG: //p' | tr '\n' ' ')" = "[--remote-control] [my project] [-c] " ]
+}
+
+@test "a name the user typed after the remote flag wins over the session name" {
+    use_agent claude
+    export DOCKER_CODE_REMOTE=1 DOCKER_CODE_SESSION_NAME="from-host"
+    run bash "${LAUNCH}" --remote-control "typed"
+    [ "$(args_line)" = "--remote-control typed" ]
+}
+
+@test "an agent whose remote control takes no name gets none" {
+    use_agent copilot
+    export DOCKER_CODE_REMOTE=1 DOCKER_CODE_SESSION_NAME="my project"
+    run bash "${LAUNCH}"
+    [ "$(args_line)" = "--remote" ]
+}
+
 @test "a remote flag the user typed, or its --no- form, is not doubled or contradicted" {
     use_agent copilot
     export DOCKER_CODE_REMOTE=1

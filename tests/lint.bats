@@ -374,6 +374,39 @@ EOF
     }
 }
 
+@test "the host and the container fill in a compose session name alike" {
+    # lib/compose.sh renders the file on the host, image/compose.sh fills in the name inside a session
+    # for the /remote skill. The image has no lib/, so the container keeps a copy; a slug that differs
+    # between the two would make the compose file and <agent>-docker-remote name the same session
+    # differently, and both would run.
+    for fn in compose_slug compose_quote compose_fill; do
+        a="$(sed -n "/^${fn}()/,/^}/p" "${REPO_ROOT}/lib/compose.sh" | grep -v '^ *#')"
+        b="$(sed -n "/^${fn}()/,/^}/p" "${REPO_ROOT}/image/compose.sh" | grep -v '^ *#')"
+        [ -n "${a}" ] && [ "${a}" = "${b}" ] || {
+            echo "${fn} differs between lib/compose.sh and image/compose.sh:"
+            diff <(printf '%s\n' "${a}") <(printf '%s\n' "${b}") || true
+            return 1
+        }
+    done
+}
+
+@test "every agent with remote control ships the same /remote skill" {
+    first=""
+    for skill in agents/claude/defaults/.claude/skills/remote/SKILL.md \
+                 agents/codex/defaults/.codex/skills/remote/SKILL.md \
+                 agents/copilot/defaults/.copilot/skills/remote/SKILL.md; do
+        [ -f "${REPO_ROOT}/${skill}" ] || { echo "${skill} is missing"; return 1; }
+        grep -q '^name: remote$' "${REPO_ROOT}/${skill}"
+        grep -q 'docker-code-compose' "${REPO_ROOT}/${skill}"
+        if [ -z "${first}" ]; then
+            first="${skill}"
+        else
+            cmp -s "${REPO_ROOT}/${first}" "${REPO_ROOT}/${skill}" ||
+                { echo "${skill} differs from ${first}"; return 1; }
+        fi
+    done
+}
+
 @test "the container parser reads agent.env the same way the host validates it" {
     # The host accepts an agent.env and the container acts on it, so a disagreement is invisible until
     # a session starts: `AGENT_BIN=vibe  # the binary` passed every check here and then failed at exec

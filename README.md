@@ -112,6 +112,8 @@ Everything via environment variable so that it composes itself with the wrapper.
 | `LOCAL_MODEL=<name>` | | which (`docker-code models list`) |
 | `DETACH=1` | `0` | start the session in the background ([Background sessions](#background-sessions-and-remote-control)) |
 | `REMOTE=1` | `0` | enable the agent's remote control; `<agent>-docker-remote` sets it ([REMOTE.md](docs/REMOTE.md)) |
+| `NAME=<name>` | directory name | a remote session's name, in the vendor's app and in the container name |
+| `RESTART=<policy>` | `unless-stopped` for remote sessions in the background, else `no` | Docker restart policy of a background session |
 | `SHELL=1` | `0` | instead of the agent a bash in the container |
 | `SHARED=1` | `0` | Mount `~/docker-code/shared` under `~/shared` |
 | `MOUNT="/a:/a:ro /b:/b"` | | additional bind mounts |
@@ -259,11 +261,17 @@ Claude Code, Codex and Copilot can be driven from their vendor's web or mobile a
 command of its own for that, which starts it in the background with remote control on:
 
 ```bash
+cd ~/src/myproject
 claude-docker-remote                 # likewise codex-docker-remote, copilot-docker-remote
 docker-code sessions                 # what is running, foreground or detached
-docker-code attach claude-docker_1   # into the TUI; Ctrl-P Ctrl-Q leaves it running again
-docker stop claude-docker_1          # end it
+docker-code attach claude-docker-remote_myproject   # into the TUI; Ctrl-P Ctrl-Q leaves it again
+docker stop claude-docker-remote_myproject          # end it
 ```
+
+A remote session is named after its directory (`DOCKER_CODE_NAME` picks another name) and restarts
+by itself until it is stopped. To run it with `docker compose` instead, `docker-code compose claude`
+asks which settings to use and writes `compose.yml` — or type `/remote` inside the agent, which
+writes it with that session's settings.
 
 `claude-docker` itself stays a session in your terminal. Ctrl-P Ctrl-Q detaches that one too, and
 `DOCKER_CODE_DETACH=1` starts any session in the background.

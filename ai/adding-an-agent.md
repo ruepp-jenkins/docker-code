@@ -50,11 +50,13 @@ next with `\`.
 | `AGENT_LOCAL_ENV` | — | Semicolon-separated `NAME=value` entries; `%u` is the gateway URL and `%m` the model |
 | `AGENT_LOCAL_ARGS` | — | Additional local-model arguments; `%m` is the model name |
 | `AGENT_NOTE` | — | One-sentence limitation; required when `AGENT_LOCAL_MODE=none` |
-| `AGENT_REMOTE_ARGS` | — | Flags prepended when `DOCKER_CODE_REMOTE=1`, unless the user typed the flag or its `--no-` form |
+| `AGENT_REMOTE_ARGS` | — | Flags prepended when `DOCKER_CODE_REMOTE=1`, unless the user typed the flag or its `--no-` form; a `%n` word becomes the session name (`DOCKER_CODE_NAME`, default the directory) |
 | `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon; see [Remote control](../docs/REMOTE.md) |
 
 Setting either remote key also gives the agent a `<wrapper>-remote` command. Add its symlink with
-`ln -s docker-code bin/<wrapper>-remote`; the installer derives it on its own.
+`ln -s docker-code bin/<wrapper>-remote`; the installer derives it on its own. Copy the `/remote`
+skill (`agents/claude/defaults/.claude/skills/remote/SKILL.md`) into the agent's defaults, at the
+path its tool reads skills from.
 
 ### `AGENT_LOCAL_MODE`
 

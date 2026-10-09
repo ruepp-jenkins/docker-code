@@ -35,18 +35,124 @@ with its terminal, which is why the `-remote` commands start in the background a
 container name:
 
 ```bash
+$ cd ~/src/myproject
 $ claude-docker-remote
-claude-docker-remote: Claude Code is running in the background as claude-docker_1.
+claude-docker-remote: Claude Code is running in the background as claude-docker-remote_myproject.
 ```
 
 A session that is already running gets there with **Ctrl-P Ctrl-Q**: the terminal is released, the
 container keeps going. From then on:
 
 ```bash
-docker-code sessions                   # what is running, foreground or detached
-docker-code attach claude-docker_1     # back into the TUI (Ctrl-P Ctrl-Q leaves again)
-docker stop claude-docker_1            # end the session
+docker-code sessions                                 # what is running, foreground or detached
+docker-code attach claude-docker-remote_myproject    # back into the TUI (Ctrl-P Ctrl-Q leaves again)
+docker stop claude-docker-remote_myproject           # end the session
 ```
+
+### The session name
+
+A remote session is named after the directory it was started in, or after `DOCKER_CODE_NAME`:
+
+```bash
+DOCKER_CODE_NAME="Release 2.0" claude-docker-remote
+```
+
+The name is used twice. Claude Code lists the session under it in the app (Copilot and Codex have no
+name of their own to set, so for them it is only the container's). And the container is called
+`<agent>-docker-remote_<name>`, lowercased and with everything but letters, digits, `-` and `_`
+replaced — `claude-docker-remote_release-2-0` above.
+
+One name is one session. Starting `claude-docker-remote` again in the same directory while it runs
+is refused with the `attach` command to use instead; a second session for the same directory needs
+a second name. Each named session has an inner Docker store of its own, so it does not compete with
+the numbered sessions for theirs.
+
+### It restarts by itself
+
+A remote session in the background is started with Docker's restart policy `unless-stopped`: when
+the agent exits, the Docker daemon restarts or the host reboots, it comes back on its own — with a
+new conversation, since the old process is gone. `docker stop` ends it for good.
+
+Because Docker refuses a restart policy together with `--rm`, a stopped session stays behind as a
+stopped container. The next `claude-docker-remote` in that directory replaces it; `docker rm` removes
+it by hand. `DOCKER_CODE_RESTART` sets another policy (`always`, `on-failure[:N]`) or `no`, which
+brings back `--rm`. It only applies in the background; a session in the terminal ends with it.
+
+The shared services follow suit only partly: the local models have their own `unless-stopped`, the
+registry mirror and the `NET=gateway` proxy do not. After a reboot, a `NET=gateway` session comes
+back without its gateway and so without a way out — it fails closed — until it is started again with
+`claude-docker-remote`. The compose file below has no such gap: its gateway is a service of its own
+and restarts with the session.
+
+### With docker compose
+
+The same session as a `compose.yml`, for those who manage their long-running containers that way:
+
+```bash
+cd ~/src/myproject
+docker-code compose claude                   # asks, then writes ./compose.yml
+docker compose up -d                         # start; restarts with Docker and the host
+docker-code attach claude-docker-remote_myproject
+docker compose down                          # stop and remove (-v would also delete its inner Docker store)
+```
+
+In a terminal, the command first shows the `DOCKER_CODE_*` settings exported in this shell and asks
+whether the file should use them. Declined, or with none set, it asks for the ones that decide what
+kind of session this is — name, network mode (and for `gateway` the policy and extra domains), YOLO,
+inner Docker, restart policy:
+
+```text
+docker-code: docker-code settings in this shell:
+docker-code:   DOCKER_CODE_YOLO=1
+docker-code: Use them for the compose file? (y n) [y] n
+docker-code: Session name? [myproject]
+docker-code: Network? (full restricted gateway none) [full] gateway
+docker-code: Gateway policy: only the agent's domains, or the internet minus the LAN? (allowlist open) [allowlist]
+...
+```
+
+`--yes` skips the questions and takes the shell's settings as they are, which is also what happens
+without a terminal; `--ask` asks even then. `--stdout` prints the file instead of writing it, and
+`--force` replaces an existing `compose.yml`.
+
+The file is generated from exactly the `docker run` that `claude-docker-remote` would execute with
+those settings, so `DOCKER_CODE_YOLO`, `DIND`, `LOCAL`, `MOUNT` and the rest carry over, and the
+container name is the same — compose and the command replace each other rather than running side by
+side.
+
+**`NET=gateway`** becomes a second service, `egress`, with the same squid policy the launcher would
+generate, written into the file under `configs:`. The topology is the launcher's too: the session's
+only network is `internal`, shared with the gateway alone, and only the gateway has a network with a
+route out. The session starts once the gateway reports ready, and both restart together — unlike the
+launcher's gateway, which `<agent>-docker-remote` sessions cannot bring back after a reboot.
+`docker compose logs egress` shows what was allowed and refused. The policy is fixed when the file is
+written; to change it, write the file again. `DOCKER_CODE_EGRESS_POOL` does not apply: the two
+networks belong to the compose project and take their ranges from Docker.
+
+What does not fit into a compose file is left out or refused, with a message:
+
+- `REGISTRY_MIRROR=1` is left out: the mirror is started and stopped by docker-code sessions. The
+  inner Docker pulls from Docker Hub.
+- `LOCAL=1` works, but the model services have to be up: `docker-code models up` once.
+- A flag in `DOCKER_CODE_RUN_ARGS` that has no translation is refused by name.
+
+Variables passed through from your shell — API keys, `TERM`, proxies — appear in the file by name
+only, and compose takes their values from the shell that runs `docker compose up`. No secret is
+written into the project directory. The file does contain absolute host paths, so it belongs to this
+machine.
+
+#### From inside the agent: /remote
+
+Claude Code, Codex and Copilot come with a skill for this, `remote`. It uses the settings of the
+session it runs in, without questions — for others, `docker-code compose` on the host asks. In Claude Code `/remote` writes
+the same `compose.yml` into the workspace, `/remote "Release 2.0"` with a name; Codex invokes it as
+`$remote`, and Copilot and Codex also pick it up when asked for "a compose file for remote". Every session of these
+agents leaves the template for its own settings in its home (`~/.docker-code/compose-*.yml`), and
+the command `docker-code-compose` in the image fills in the name — the agent cannot run the launcher,
+which is on the host. `docker compose up -d` is then yours to run, on the host.
+
+The skill is seeded into `~/docker-code/<agent>/` on the next start, like the other defaults, and
+never overwrites a skill of that name you already have.
 
 The machine itself has to stay on and online. A detached session also keeps the shared services it
 uses — the registry mirror, the egress gateways — running after it ends; the next foreground session
@@ -100,8 +206,8 @@ Three ways, all of them in a session that keeps running:
 # An interactive session that is also reachable from the app (adds --remote-control)
 claude-docker-remote
 
-# Name it, so you find it in the list on the phone
-claude-docker-remote --remote-control "docker-code"
+# Under another name than the directory's
+DOCKER_CODE_NAME="docker-code" claude-docker-remote
 
 # Server mode: no local conversation, sessions are started from the app
 claude-docker-remote remote-control --name "docker-code"
@@ -118,8 +224,10 @@ without `DOCKER_CODE_YOLO` stays usable from there.
 To have every session connect without the setting, run `/config` and set **Enable Remote Control for
 all sessions**, or put `"remoteControlAtStartup": true` into `~/docker-code/claude/.claude/settings.json`.
 
-Session names default to the container's hostname, `claude-code`, which is the same for every
-session. `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` is passed through to change that.
+The session is listed under its [session name](#the-session-name) — the directory, or
+`DOCKER_CODE_NAME`. A name typed after `--remote-control` yourself wins over both. Sessions started
+from the app in server mode are named by Claude Code with a prefix, the hostname `claude-code` by
+default; `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` is passed through to change that.
 
 ### When it does not connect
 
@@ -227,12 +335,14 @@ Two `agent.env` keys carry this, both applied by `image/launch.sh` only when `DO
 and never in front of a subcommand from `AGENT_YOLO_SKIP`:
 
 - `AGENT_REMOTE_ARGS` — flags prepended to the agent's arguments, unless the user typed the flag or
-  its `--no-` form.
+  its `--no-` form. A word `%n` becomes the session name as one argument, or is dropped without one.
 - `AGENT_REMOTE_START` — a subcommand of `AGENT_BIN` run before the agent, for tools whose remote
   control is a daemon.
 
 An agent that sets either of them gets `<wrapper>-remote` automatically: `agent_wrappers` in
 `lib/agents.sh` and `wrapper_names` in `install.sh` derive it, and the checkout needs the symlink
-`ln -s docker-code bin/<wrapper>-remote`, which `tests/registry.bats` asks for.
+`ln -s docker-code bin/<wrapper>-remote`, which `tests/registry.bats` asks for. It also needs the
+`/remote` skill in its defaults, at the path its tool reads skills from — a copy of
+`agents/claude/defaults/.claude/skills/remote/SKILL.md`, which `tests/lint.bats` compares.
 
 See [Adding an agent](../ai/adding-an-agent.md).

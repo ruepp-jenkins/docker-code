@@ -117,9 +117,12 @@ RUN set -eux; \
 
 COPY image/entrypoint.sh image/user-init.sh image/launch.sh \
      image/init-firewall.sh image/local-models.sh /usr/local/bin/
+# Under a name of its own rather than compose.sh: it is a command the agent runs (the /remote skill),
+# not a step of the entrypoint chain, and a name that says what it is for is what the skill can call.
+COPY image/compose.sh /usr/local/bin/docker-code-compose
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/user-init.sh \
                /usr/local/bin/launch.sh /usr/local/bin/init-firewall.sh \
-               /usr/local/bin/local-models.sh
+               /usr/local/bin/local-models.sh /usr/local/bin/docker-code-compose
 
 # No per-tool config-dir variable is needed here, unlike the single-tool original: /home/agent as a
 # whole is the persistent bind mount, so every path a tool invents under it persists by default —

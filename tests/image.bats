@@ -55,6 +55,11 @@ BASE_DOCKERFILE="${BATS_TEST_DIRNAME}/../base/Dockerfile"
     grep -q 'ENTRYPOINT \["/usr/local/bin/entrypoint.sh"\]' "${BASE_DOCKERFILE}"
 }
 
+@test "the base image ships the command the /remote skill runs" {
+    grep -q 'COPY image/compose.sh /usr/local/bin/docker-code-compose' "${BASE_DOCKERFILE}"
+    grep -q 'chmod 0755 .*/usr/local/bin/docker-code-compose' <(tr -d '\\\n' <"${BASE_DOCKERFILE}")
+}
+
 @test "the base ships socat, which the local-model bridge needs" {
     grep -q 'socat' "${BASE_DOCKERFILE}"
     grep -q 'socat' "${REPO_ROOT}/image/local-models.sh"

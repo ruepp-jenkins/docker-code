@@ -150,7 +150,7 @@ SELF_PATH="$(resolve_self "$0")"
 DOCKER_CODE_ROOT="${DOCKER_CODE_ROOT:-$(cd -P "$(dirname "$(dirname "${SELF_PATH}")")" && pwd)}"
 export DOCKER_CODE_ROOT
 
-for lib in agents mirror models egress autoupdate; do
+for lib in agents mirror models egress autoupdate compose; do
     [ -f "${DOCKER_CODE_ROOT}/lib/${lib}.sh" ] ||
         die "cannot find lib/${lib}.sh under ${DOCKER_CODE_ROOT}; set DOCKER_CODE_ROOT to the checkout"
     # shellcheck source=/dev/null
@@ -225,8 +225,10 @@ fi
 # A volume name Docker creates on demand; a path has to exist first, and creating it here rather than
 # letting Docker do it as root is what keeps you owning your own state directory.
 prepare_store() {
+    # Not for a compose file, whose path still carries the name placeholder; the session the file
+    # starts creates its store the way any first start does.
     case "$1" in
-        /*) mkdir -p "$1" || die "cannot create the Docker store at $1" ;;
+        /*) [ -n "${COMPOSE_MODE:-}" ] || mkdir -p "$1" || die "cannot create the Docker store at $1" ;;
     esac
     printf '%s\n' "$1"
 }
@@ -292,7 +294,15 @@ run_session() {
         auto_update_self ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
     fi
 
-    require_docker
+    # Writing a compose.yml (docker-code compose) builds the same argv and translates it instead of
+    # running it. "template" is the same with the name left open — see session_compose_template.
+    # Neither needs a daemon, and neither may start anything: both run as a dry run.
+    COMPOSE_MODE="${DOCKER_CODE_COMPOSE:-}"
+    if [ -n "${COMPOSE_MODE}" ]; then
+        DOCKER_CODE_DRY_RUN=1
+    else
+        require_docker
+    fi
     agent_load "${agent_id}" || exit 1
 
     # Every session knob goes through agent_knob, so DOCKER_CODE_QWEN_LOCAL=1 means what it looks
@@ -312,6 +322,40 @@ run_session() {
     if [ "${REMOTE_COMMAND:-0}" = "1" ]; then
         REMOTE=1
         DETACH="$(agent_knob DETACH 1)"
+    fi
+
+    # A compose file is only ever for this: a session nobody is attached to, kept up by Docker.
+    if [ -n "${COMPOSE_MODE}" ]; then
+        [ -n "$(agent_remote_wrapper)" ] ||
+            die "${AGENT_TITLE} has no remote control, so there is no session to keep running" \
+                "from a compose file. Agents that have one: claude, codex, copilot."
+        REMOTE=1
+        DETACH=1
+    fi
+
+    # Remote control is only reachable while the session runs, and a session in the background has
+    # nobody to notice that it ended — the tool exiting on an error, the daemon restarting, the host
+    # rebooting. unless-stopped brings it back from all three and still respects `docker stop`.
+    #
+    # Only for a session in the background: a foreground one that restarts after its terminal is gone
+    # would turn into a detached one nobody asked for.
+    local RESTART
+    RESTART="$(agent_knob RESTART "")"
+    if [ -z "${RESTART}" ]; then
+        if [ "${REMOTE}" = "1" ] && [ "${DETACH}" = "1" ]; then
+            RESTART=unless-stopped
+        else
+            RESTART=no
+        fi
+    fi
+    case "${RESTART}" in
+        no|always|unless-stopped|on-failure|on-failure:[0-9]*) ;;
+        *) die "DOCKER_CODE_RESTART must be no, unless-stopped, always or on-failure[:N]," \
+               "not '${RESTART}'" ;;
+    esac
+    if [ "${RESTART}" != "no" ] && [ "${DETACH}" != "1" ]; then
+        warn "DOCKER_CODE_RESTART applies to sessions in the background; this one ends with its terminal."
+        RESTART=no
     fi
 
     # `privileged` rather than the rootless auto-detection, because it is the mode that works on
@@ -370,7 +414,16 @@ run_session() {
     mkdir -p "${STORAGE_DIR}" || die "cannot create ${STORAGE_DIR}"
 
     local run
-    run=(docker run --rm --init)
+    run=(docker run)
+
+    # --rm and a restart policy exclude each other: Docker refuses the pair, because a container
+    # removed when it stops has nothing left to restart. A session that restarts therefore stays
+    # behind after `docker stop`, and the next start under its name replaces it — claim_session_name.
+    if [ "${RESTART}" = "no" ]; then
+        run+=(--rm --init)
+    else
+        run+=(--init --restart "${RESTART}")
+    fi
 
     # Interactive only when there is a terminal on both ends. Without the check,
     # `claude-docker -p "x" | jq` would get a TTY allocated and jq would receive terminal escapes.
@@ -401,21 +454,44 @@ run_session() {
     # ------------------------------------------------------------------------------------------
     local NAME_PREFIX="${AGENT_WRAPPER}"
 
-    local session_slot container_name=""
-    session_slot="$(next_free_slot "${NAME_PREFIX}" || true)"
-    if [ -n "${session_slot}" ]; then
-        container_name="${NAME_PREFIX}_${session_slot}"
-        run+=(--name "${container_name}")
-    fi
-
     # One inner Docker store per concurrent session: two daemons cannot share a data root, because
     # containerd holds an exclusive lock on its metadata database. The second one waits, times out
     # and dies, which from inside that session looks like "Docker is simply not running here". Slot 1
     # keeps the unsuffixed store, so the common single-session case finds the images it built
     # yesterday rather than an empty cache.
-    local store_suffix=""
-    if [ -n "${session_slot}" ] && [ "${session_slot}" != "1" ]; then
-        store_suffix="_${session_slot}"
+    local session_slot="" container_name="" store_suffix="" name_fixed=0 session_name=""
+
+    # ------------------------------------------------------------------------------------------
+    # A remote session is named instead: by DOCKER_CODE_NAME, or by the directory it was started in.
+    #
+    # The name is what you look for in the app on your phone, where every session would otherwise be
+    # called after the hostname. It is also the container's name — claude-docker-remote_myproject —
+    # because a session that restarts on its own and is attached to days later is found by what it
+    # is about, not by a number that depended on what else ran that afternoon. Its inner Docker store
+    # is its own for the same reason: it outlives every numbered session around it.
+    #
+    # A fixed name can be taken, which is what claim_session_name settles.
+    # ------------------------------------------------------------------------------------------
+    if [ "${REMOTE}" = "1" ] && [ -n "$(agent_remote_wrapper)" ]; then
+        local slug
+        session_name="$(agent_knob NAME "$(basename "${workspace}")")"
+        slug="$(compose_slug "${session_name}")"
+        if [ -n "${COMPOSE_MODE}" ]; then
+            slug="${COMPOSE_SLUG_PLACEHOLDER}"
+        fi
+        container_name="$(agent_remote_wrapper)_${slug}"
+        store_suffix="_remote_${slug}"
+        name_fixed=1
+        run+=(--name "${container_name}")
+    else
+        session_slot="$(next_free_slot "${NAME_PREFIX}" || true)"
+        if [ -n "${session_slot}" ]; then
+            container_name="${NAME_PREFIX}_${session_slot}"
+            run+=(--name "${container_name}")
+        fi
+        if [ -n "${session_slot}" ] && [ "${session_slot}" != "1" ]; then
+            store_suffix="_${session_slot}"
+        fi
     fi
 
     run+=(--volume "${workspace}:${workspace}" --workdir "${workspace}")
@@ -453,6 +529,13 @@ run_session() {
     run+=(--env "DOCKER_CODE_YOLO=${YOLO}")
     if [ "${REMOTE}" = "1" ]; then
         run+=(--env "DOCKER_CODE_REMOTE=1")
+    fi
+    if [ -n "${session_name}" ]; then
+        if [ -n "${COMPOSE_MODE}" ]; then
+            run+=(--env "DOCKER_CODE_SESSION_NAME=${COMPOSE_NAME_PLACEHOLDER}")
+        else
+            run+=(--env "DOCKER_CODE_SESSION_NAME=${session_name}")
+        fi
     fi
     run+=(--env "DOCKER_CODE_NET=${NET_MODE}")
     run+=(--env "DOCKER_CODE_DIND=${DIND_MODE}")
@@ -498,6 +581,8 @@ run_session() {
         run+=(--pull "${pull_policy}")
     fi
 
+    session_compose_template "${workspace}"
+
     run+=("${IMAGE}" "$@")
 
     # Last before the start, once every setting that could still refuse the session has been read:
@@ -509,6 +594,11 @@ run_session() {
         [ "$(agent_knob AUTO_UPDATE_IMAGE "${DOCKER_CODE_AUTO_UPDATE:-1}")" != "0" ] &&
         [ "${pull_policy}" != "never" ]; then
         auto_update_image "${IMAGE}"
+    fi
+
+    if [ -n "${COMPOSE_MODE}" ]; then
+        session_compose_print "${session_name}"
+        exit 0
     fi
 
     # The seam the test suite uses: everything above is pure command construction, so it can be
@@ -529,9 +619,11 @@ run_session() {
         trap session_cleanup EXIT INT TERM
     fi
 
+    [ "${name_fixed}" = "0" ] || claim_session_name "${container_name}"
+
     # Nothing to retry, nothing to switch off afterwards, nothing to say: hand the process over and
     # be gone.
-    if [ -z "${container_name}" ] && [ "${manage_mirror}" = "0" ] &&
+    if { [ -z "${container_name}" ] || [ "${name_fixed}" = "1" ]; } && [ "${manage_mirror}" = "0" ] &&
         [ "${manage_egress}" = "0" ] && [ "${DETACH}" != "1" ]; then
         exec "${run[@]}"
     fi
@@ -545,7 +637,10 @@ run_session() {
     local status=0
     "${run[@]}" || status=$?
 
-    if [ -z "${container_name}" ] || [ "${status}" -ne 125 ] ||
+    # A chosen name is not given up for an unnamed container: a second session under it was refused
+    # by claim_session_name already, so a conflict now is a race that start lost, and the one that won
+    # is the session that was asked for.
+    if [ -z "${container_name}" ] || [ "${name_fixed}" = "1" ] || [ "${status}" -ne 125 ] ||
         ! taken_names | grep -qxF "${container_name}"; then
         [ "${DETACH}" != "1" ] || [ "${status}" -ne 0 ] || detached_notice "${container_name}"
         exit "${status}"
@@ -623,6 +718,262 @@ session_remote_notes() {
 
 taken_names() {
     docker ps --all --format '{{.Names}}' 2>/dev/null
+}
+
+# claim_session_name <container>
+#
+# A remote session's name is fixed, so it can already be taken. A session running under it is the one
+# this start was meant to create, and starting a second one would only fail on the name a moment
+# later; one that has stopped is what a restart policy leaves behind after `docker stop`, and taking
+# its place is what starting it again means. Anything else under that name is not ours to remove.
+claim_session_name() {
+    local name="$1" state owner
+    state="$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || true)"
+    [ -n "${state}" ] || return 0
+
+    owner="$(docker inspect -f "{{index .Config.Labels \"${MIRROR_LABEL}\"}}" "${name}" 2>/dev/null || true)"
+    [ "${owner}" = "session" ] ||
+        die "a container named ${name} exists and is not a docker-code session;" \
+            "set DOCKER_CODE_NAME to start this one under another name"
+
+    case "${state}" in
+        running|restarting|paused)
+            die "${name} is already running. Attach to it with: docker-code attach ${name}" \
+                "— or set DOCKER_CODE_NAME to start a second session for this directory."
+            ;;
+    esac
+
+    say "replacing the stopped session ${name}"
+    docker rm "${name}" >/dev/null || die "cannot remove the stopped session ${name}"
+}
+
+# ---------------------------------------------------------------------------------------------
+# compose.yml
+#
+# `docker-code compose <agent>` prints the file. Inside a session, the /remote skill has no way to
+# run this launcher — it is on the host — so every session of an agent with remote control leaves the
+# same file in its own home as a template with the name left open, and image/compose.sh fills it in.
+# Rendered by running this script again in compose mode, which is the one way to get the remote
+# variant of *these* settings without a second copy of run_session.
+# ---------------------------------------------------------------------------------------------
+session_compose_template() {
+    local workspace="$1" key file
+    [ -z "${COMPOSE_MODE}" ] || return 0
+    [ -n "$(agent_remote_wrapper)" ] || return 0
+
+    # One per workspace, since the workspace is part of what the file mounts, and the same workspace
+    # started again overwrites its own rather than piling up.
+    key="$(printf '%s' "${workspace}" | cksum | cut -d ' ' -f 1)"
+    file=".docker-code/compose-${key}.yml"
+    run+=(--env "DOCKER_CODE_COMPOSE_TEMPLATE=/home/agent/${file}")
+
+    [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ] || return 0
+
+    # A convenience for later, so it never costs the session anything: on any failure the container
+    # finds no file and says so when the skill asks for it.
+    mkdir -p "${STORAGE_DIR}/.docker-code" 2>/dev/null || return 0
+    if DOCKER_CODE_COMPOSE=template DOCKER_CODE_AUTO_UPDATE=0 \
+        "${SELF_PATH}" run "${AGENT_ID}" >"${STORAGE_DIR}/${file}.tmp" 2>/dev/null; then
+        mv -f "${STORAGE_DIR}/${file}.tmp" "${STORAGE_DIR}/${file}" 2>/dev/null || true
+    else
+        rm -f "${STORAGE_DIR}/${file}.tmp" "${STORAGE_DIR}/${file}" 2>/dev/null || true
+    fi
+}
+
+session_compose_print() {
+    local name="$1" rendered
+    # run[0..1] is `docker run`; the rest is what compose_render translates.
+    rendered="$(compose_render "${AGENT_ID}" "${run[@]:2}")" || exit 1
+
+    if [ -n "${COMPOSE_TARGET:-}" ]; then
+        if ! COMPOSE_TARGET="" session_compose_print "${name}" >"${COMPOSE_TARGET}.tmp" ||
+            ! mv -f "${COMPOSE_TARGET}.tmp" "${COMPOSE_TARGET}"; then
+            rm -f "${COMPOSE_TARGET}.tmp"
+            die "could not write ${COMPOSE_TARGET}"
+        fi
+        say "wrote ${COMPOSE_TARGET} for the session \"${name}\""
+        say "  docker compose up -d                 start it in the background"
+        say "  docker-code attach $(compose_slug_name "${name}")"
+        say "  docker compose down                  stop and remove it"
+        return 0
+    fi
+
+    {
+        printf '# %s, kept running in the background with remote control on.\n' "${AGENT_TITLE}"
+        printf '# Generated by docker-code (docs/REMOTE.md). In this directory, on the host:\n'
+        printf '#\n'
+        printf '#   docker compose up -d          start it; it restarts with Docker and the host\n'
+        printf '#   docker-code attach %s\n' "${container_name}"
+        printf '#   docker compose down           stop and remove it\n'
+        printf '#\n'
+        printf '# Variables listed without a value are taken from the shell that runs compose.\n\n'
+        printf '%s\n' "${rendered}"
+    } | if [ "${COMPOSE_MODE}" = "template" ]; then cat; else compose_fill "${name}"; fi
+}
+
+# The container name a session of this name gets, for the message after writing the file.
+compose_slug_name() {
+    printf '%s_%s\n' "$(agent_remote_wrapper)" "$(compose_slug "$1")"
+}
+
+# ---------------------------------------------------------------------------------------------
+# docker-code compose — asking before writing
+#
+# A compose file outlives the shell it was made in, so which settings go into it is worth a question:
+# the DOCKER_CODE_* variables exported here may be the ones meant for it, or leftovers from an
+# afternoon of experiments. Shown and confirmed when there are any; otherwise, or when declined, the
+# few settings that decide what kind of session this is are asked one by one.
+#
+# Only on a terminal. In a script, or with --yes, the shell's settings are taken as they are — which
+# is what `<agent>-docker-remote` does too.
+# ---------------------------------------------------------------------------------------------
+COMPOSE_KNOBS="NAME YOLO NET EGRESS_POLICY ALLOW_DOMAINS DENY_DOMAINS ALLOW_GITHUB DIND DOCKER_STORE \
+APPARMOR LOCAL LOCAL_MODEL SHARED MOUNT ENV GITCONFIG SSH REGISTRY_MIRROR INSECURE_REGISTRIES \
+DIND_WAIT RUN_ARGS RESTART PULL IMAGE"
+
+# Every knob set in this shell, generic or for this agent, as NAME=value lines.
+compose_shell_settings() {
+    local knob upper var
+    upper="$(printf '%s' "${AGENT_ID}" | tr 'a-z-' 'A-Z_')"
+    for knob in ${COMPOSE_KNOBS}; do
+        for var in "DOCKER_CODE_${knob}" "DOCKER_CODE_${upper}_${knob}"; do
+            [ -z "${!var:-}" ] || printf '%s=%s\n' "${var}" "${!var}"
+        done
+    done
+}
+
+compose_clear_settings() {
+    local knob upper
+    upper="$(printf '%s' "${AGENT_ID}" | tr 'a-z-' 'A-Z_')"
+    for knob in ${COMPOSE_KNOBS}; do
+        unset "DOCKER_CODE_${knob}" "DOCKER_CODE_${upper}_${knob}"
+    done
+}
+
+# compose_set <knob> <value> — in the per-agent form, which no generic setting left in the shell can
+# outrank.
+compose_set() {
+    local upper
+    upper="$(printf '%s' "${AGENT_ID}" | tr 'a-z-' 'A-Z_')"
+    export "DOCKER_CODE_${upper}_$1=$2"
+}
+
+# compose_ask <question> <default> [choice...] — the answer in COMPOSE_ANSWER rather than on stdout,
+# so that a closed stdin can end the command here instead of in a subshell that would only end itself.
+# With choices, anything else is asked again rather than handed to a die further down.
+compose_ask() {
+    local question="$1" default="$2" answer choice
+    shift 2
+    while true; do
+        if [ "$#" -gt 0 ]; then
+            printf '%s: %s? (%s) [%s] ' "${SELF_NAME}" "${question}" "$*" "${default}" >&2
+        else
+            printf '%s: %s? [%s] ' "${SELF_NAME}" "${question}" "${default}" >&2
+        fi
+        IFS= read -r answer || die "no answer; run with --yes to take the settings as they are"
+        [ -n "${answer}" ] || answer="${default}"
+        COMPOSE_ANSWER="${answer}"
+        [ "$#" -gt 0 ] || return 0
+        for choice in "$@"; do
+            [ "${answer}" != "${choice}" ] || return 0
+        done
+        say "one of: $*"
+    done
+}
+
+compose_confirm() {
+    compose_ask "$1" "$2" y n
+    [ "${COMPOSE_ANSWER}" = "y" ]
+}
+
+compose_questions() {
+    local settings
+    settings="$(compose_shell_settings)"
+
+    if [ -n "${settings}" ]; then
+        say "docker-code settings in this shell:"
+        printf '%s\n' "${settings}" | sed "s/^/${SELF_NAME}:   /" >&2
+        if compose_confirm "Use them for the compose file" y; then
+            compose_ask "Session name" "$(agent_knob NAME "$(basename "${PWD}")")"
+            compose_set NAME "${COMPOSE_ANSWER}"
+            return 0
+        fi
+        compose_clear_settings
+    else
+        say "no docker-code settings in this shell; a few questions instead (Enter takes the default)"
+    fi
+
+    compose_ask "Session name" "$(basename "${PWD}")"
+    compose_set NAME "${COMPOSE_ANSWER}"
+
+    compose_ask "Network" full full restricted gateway none
+    compose_set NET "${COMPOSE_ANSWER}"
+    case "${COMPOSE_ANSWER}" in
+        gateway)
+            compose_ask "Gateway policy: only the agent's domains, or the internet minus the LAN" \
+                allowlist allowlist open
+            compose_set EGRESS_POLICY "${COMPOSE_ANSWER}"
+            compose_ask "Further domains to allow, comma separated" ""
+            [ -z "${COMPOSE_ANSWER}" ] || compose_set ALLOW_DOMAINS "${COMPOSE_ANSWER}"
+            ;;
+        restricted)
+            compose_ask "Further domains to allow, comma separated" ""
+            [ -z "${COMPOSE_ANSWER}" ] || compose_set ALLOW_DOMAINS "${COMPOSE_ANSWER}"
+            ;;
+    esac
+
+    if [ -n "${AGENT_YOLO_ARGS}" ] && compose_confirm "Run without permission prompts (YOLO)" n; then
+        compose_set YOLO 1
+    fi
+    compose_ask "Docker inside the session" privileged privileged rootless 0
+    compose_set DIND "${COMPOSE_ANSWER}"
+    compose_ask "Restart policy" unless-stopped unless-stopped always on-failure no
+    compose_set RESTART "${COMPOSE_ANSWER}"
+}
+
+cmd_compose() {
+    local to_stdout=0 force=0 ask=auto agent
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --stdout) to_stdout=1 ;;
+            --force|-f) force=1 ;;
+            --yes|-y) ask=0 ;;
+            --ask) ask=1 ;;
+            -*) die "unknown option $1 (--stdout, --force, --yes, --ask)" ;;
+            *) break ;;
+        esac
+        shift
+    done
+    [ "$#" -gt 0 ] ||
+        die "usage: docker-code compose [--stdout] [--force] [--yes|--ask] <agent> [args...]"
+    agent="$1"
+    shift
+
+    agent_load "${agent}" || exit 1
+    [ -n "$(agent_remote_wrapper)" ] ||
+        die "${AGENT_TITLE} has no remote control, so there is no session to keep running" \
+            "from a compose file. Agents that have one: claude, codex, copilot."
+
+    if [ "${ask}" = "auto" ]; then
+        ask=0
+        [ ! -t 0 ] || [ ! -t 2 ] || ask=1
+    fi
+
+    COMPOSE_TARGET=""
+    if [ "${to_stdout}" = "0" ]; then
+        COMPOSE_TARGET="${PWD}/compose.yml"
+        if [ -e "${COMPOSE_TARGET}" ] && [ "${force}" = "0" ]; then
+            if [ "${ask}" = "0" ] || ! compose_confirm "${COMPOSE_TARGET} exists. Replace it" n; then
+                die "${COMPOSE_TARGET} already exists; --force replaces it, --stdout prints instead"
+            fi
+        fi
+    fi
+
+    [ "${ask}" = "0" ] || compose_questions
+
+    DOCKER_CODE_COMPOSE="file"
+    run_session "${agent}" "$@"
 }
 
 # One trap for both shared services, because a session can be the last user of either. Each of these
@@ -917,6 +1268,34 @@ session_egress() {
     egress_mode=1
     egress_proxy="$(egress_url "${AGENT_ID}")"
 
+    # A compose file brings its own gateway as a second service (lib/compose.sh), with the policy
+    # written into the file. Same config, rendered into a scratch directory instead of the one the
+    # launcher's gateway for this agent reads — that one is rewritten by every session start.
+    if [ -n "${COMPOSE_MODE:-}" ]; then
+        local scratch conf
+        scratch="$(mktemp -d "${TMPDIR:-/tmp}/docker-code-compose.XXXXXX")" ||
+            die "cannot create a scratch directory for the gateway policy"
+        conf="$(DOCKER_CODE_EGRESS_HOME="${scratch}" \
+            egress_write_config "${AGENT_ID}" "${policy}" "${denied}" "${domains[@]}")" || {
+            rm -rf "${scratch}"
+            die "could not render the gateway policy for the compose file"
+        }
+        COMPOSE_EGRESS_CONF="$(sed -e '1,2d' "${conf}")"
+        COMPOSE_EGRESS_CONF="# Generated by docker-code compose. Regenerate the file rather than edit it.
+${COMPOSE_EGRESS_CONF}"
+        # shellcheck disable=SC2034  # read by compose_render in lib/compose.sh
+        COMPOSE_EGRESS_IMAGE="${EGRESS_IMAGE}"
+        rm -rf "${scratch}"
+
+        [ -z "${EGRESS_POOL}" ] ||
+            warn "DOCKER_CODE_EGRESS_POOL does not reach the compose file; its two networks take" \
+                 "their ranges from Docker's own pool"
+
+        # The launcher's gateway port, on the service name compose resolves inside the project.
+        egress_proxy="http://${COMPOSE_EGRESS_SERVICE}:${egress_proxy##*:}"
+        run+=(--network "${COMPOSE_EGRESS_INTERNAL}")
+    fi
+
     if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
         egress_start "${AGENT_ID}" "${policy}" "${denied}" "${domains[@]}" ||
             die "the egress gateway for ${AGENT_ID} did not start, and DOCKER_CODE_NET=gateway" \
@@ -927,7 +1306,7 @@ session_egress() {
 
     # The session's only network, and an internal one, so the proxy is the sole route out. No
     # capabilities: nothing in the container writes a firewall rule in this mode.
-    run+=(--network "$(egress_network "${AGENT_ID}")")
+    [ -n "${COMPOSE_MODE:-}" ] || run+=(--network "$(egress_network "${AGENT_ID}")")
 
     # Both spellings, because the tools disagree about which they read: curl and git want the
     # lowercase pair, most Go and Node tooling accepts either.
@@ -974,6 +1353,13 @@ session_mirror() {
                 [ "${is_default}" = "1" ] ||
                     warn "DOCKER_CODE_NET=none leaves the container without a network, so the" \
                          "registry mirror stays off"
+                return 0
+            fi
+            # The mirror is started and stopped with the sessions that use it, and a compose session
+            # would find it gone after the next reboot. It is a cache, so the file goes without it.
+            if [ -n "${COMPOSE_MODE:-}" ]; then
+                warn "the registry mirror is started by docker-code sessions, so the compose file" \
+                     "leaves it out; the inner Docker pulls from Docker Hub directly"
                 return 0
             fi
             manage_mirror=1
@@ -1056,7 +1442,9 @@ session_local_models() {
     # then reaches Ollama and LiteLLM by CONNECTing through the proxy, which is why the bridge spec
     # is still handed over unchanged.
     if [ "${egress_mode}" = "1" ]; then
-        if [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
+        if [ -n "${COMPOSE_MODE:-}" ]; then
+            compose_egress_networks+=("${MODELS_NETWORK}")
+        elif [ "${DOCKER_CODE_DRY_RUN:-0}" != "1" ]; then
             egress_connect "$(egress_container "${AGENT_ID}")" "${MODELS_NETWORK}" ||
                 warn "the gateway could not join ${MODELS_NETWORK}; local models will be unreachable"
         fi
@@ -1127,8 +1515,16 @@ session_passthrough() {
         [ -n "${var}" ] || continue
         # Only forward what is actually set, so an unset variable stays unset inside rather than
         # arriving as an empty string that overrides a container default.
+        #
+        # A compose file gets the name alone, which compose fills in from the shell that runs
+        # `docker compose up`: the file lives in a project directory, often in a repository, and an
+        # API key written into it is one `git add .` away from being published.
         if [ -n "${!var:-}" ]; then
-            run+=(--env "${var}=${!var}")
+            if [ -n "${COMPOSE_MODE:-}" ]; then
+                run+=(--env "${var}")
+            else
+                run+=(--env "${var}=${!var}")
+            fi
         fi
     done
 
@@ -1137,6 +1533,8 @@ session_passthrough() {
     # only ever runs one agent and has no use for the per-agent spelling.
     local knob value
     for knob in ALLOW_DOMAINS ALLOW_GITHUB DIND_WAIT SHELL INSECURE_REGISTRIES; do
+        # A shell instead of the agent is something to ask for once, not to restart into forever.
+        [ -z "${COMPOSE_MODE:-}" ] || [ "${knob}" != "SHELL" ] || continue
         value="$(agent_knob "${knob}" "")"
         if [ -n "${value}" ]; then
             run+=(--env "DOCKER_CODE_${knob}=${value}")
@@ -1526,6 +1924,8 @@ Usage:
   docker-code egress <cmd>        status | stop [agent...] | logs <agent>  (NET=gateway proxies)
   docker-code sessions            the sessions running right now, foreground or detached
   docker-code attach [name]       reattach a detached session (Ctrl-P Ctrl-Q detaches again)
+  docker-code compose <agent>     write compose.yml for a remote session of that agent, asking
+                                  which settings go in (--yes: this shell's, --stdout: print it)
   docker-code doctor              what is installed, valid and present
   docker-code help                this text
 
@@ -1540,6 +1940,8 @@ Session knobs (prefix DOCKER_CODE_, or DOCKER_CODE_<AGENT>_ for one agent):
   AUTO_UPDATE_IMAGE=0   do not pull a newer image on the first start of the day
   DETACH=1              start the session in the background (docker-code attach)
   REMOTE=1              enable the agent's remote control from its web/mobile app
+  NAME=<name>           a remote session's name (default: the directory it starts in)
+  RESTART=<policy>      Docker restart policy (default: unless-stopped for remote in the background)
   SHELL=1               drop into bash instead of the agent
   SHARED=1              mount ~/${STATE_DIR_NAME}/shared into the session
   MOUNT="/a:/a:ro"      extra bind mounts, whitespace separated
@@ -1608,6 +2010,7 @@ case "${1:-help}" in
     registry)  shift; cmd_registry "$@" ;;
     egress)    shift; cmd_egress "$@" ;;
     sessions|ps) cmd_sessions ;;
+    compose)   shift; cmd_compose "$@" ;;
     attach)    shift; cmd_attach "$@" ;;
     doctor)    cmd_doctor ;;
     help|-h|--help) cmd_help ;;
