@@ -171,6 +171,50 @@ grant_gpu_groups() {
     done
 
     [ -z "${granted}" ] || log "GPU (${DOCKER_CODE_GPU}): ${AGENT_USER} joined the device groups${granted}"
+    GPU_GROUPS="${granted}"
+}
+
+# ---------------------------------------------------------------------------------------------
+# The GPU, handed on to the containers the agent starts
+#
+# Agents are told to run toolchains in containers rather than install them, so a GPU that stops at
+# the session is half a GPU: a Playwright image rendering a game, a PyTorch image training, both run
+# one level further in. DOCKER_CODE_GPU_ARGS is what `docker run` needs for that here — the agent
+# reads it rather than working out vendor, device nodes and group ids for itself:
+#
+#   docker run $DOCKER_CODE_GPU_ARGS mcr.microsoft.com/playwright:<version>-noble ...
+#
+# NVIDIA needs the toolkit in this image (base/Dockerfile) and, for it, a CDI spec describing the
+# driver the host's toolkit injected into this container: generated at every start, because it names
+# files of the host driver version, and a spec left from before a driver update would point at
+# libraries that are gone. The inner daemon resolves `--gpus` through it, and through the runtime
+# hook where CDI is unavailable.
+#
+# AMD and Intel need nothing installed here — their userspace (Mesa, ROCm) belongs to the image that
+# runs. The arguments themselves are built in image/gpu.sh.
+# ---------------------------------------------------------------------------------------------
+GPU_GROUPS=""
+prepare_nested_gpu() {
+    [ -n "${DOCKER_CODE_GPU:-}" ] || return 0
+
+    # shellcheck source=image/gpu.sh
+    . /usr/local/bin/docker-code-gpu.sh
+
+    if [ "${DOCKER_CODE_GPU}" = "nvidia" ] && command -v nvidia-ctk >/dev/null 2>&1; then
+        install -d -m 0755 /var/run/cdi
+        nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml >/dev/null 2>&1 ||
+            log "nvidia-ctk could not describe the GPU; containers get it through the runtime hook only"
+        # A rootless daemon cannot touch the device cgroup; the hook has to be told not to try.
+        if [ "${DOCKER_CODE_DIND:-privileged}" = "rootless" ]; then
+            nvidia-ctk config --in-place --set nvidia-container-cli.no-cgroups=true >/dev/null 2>&1 ||
+                log "could not switch off cgroup handling for rootless GPU containers"
+        fi
+    fi
+
+    # shellcheck disable=SC2086  # one gid per word
+    DOCKER_CODE_GPU_ARGS="$(gpu_nested_args "${DOCKER_CODE_GPU}" ${GPU_GROUPS})"
+    export DOCKER_CODE_GPU_ARGS
+    log "containers started here get the GPU with: docker run \$DOCKER_CODE_GPU_ARGS (${DOCKER_CODE_GPU_ARGS})"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -255,6 +299,10 @@ start_privileged_dockerd() {
     local dockerd_args
     dockerd_args=(--host=unix:///var/run/docker.sock --group docker)
 
+    # The session's /dev/shm size for the containers it starts, too: Docker's 64 MB is what a browser
+    # in a Playwright image runs out of first (session_shm in bin/docker-code).
+    [ -z "${DOCKER_CODE_SHM_SIZE:-}" ] || dockerd_args+=(--default-shm-size "${DOCKER_CODE_SHM_SIZE}")
+
     # The wrapper passes this when it has a pull-through cache running for the session to share.
     # A flag rather than a daemon.json: the file would have to be written into the bind-mounted
     # home, where it would outlive the mirror it names.
@@ -329,6 +377,7 @@ EOF
 
 align_user_ids
 grant_gpu_groups
+prepare_nested_gpu
 seed_home
 seed_defaults
 prepare_runtime_dir

@@ -32,8 +32,10 @@ start_rootless_dockerd() {
     # start for a feature most sessions never use. DOCKER_CODE_DIND_WAIT buys the guarantee back for
     # scripted runs that do need `docker` immediately.
     local dockerd_args=()
+    # Same default /dev/shm for nested containers as the privileged daemon gets (entrypoint.sh).
+    [ -z "${DOCKER_CODE_SHM_SIZE:-}" ] || dockerd_args+=(--default-shm-size "${DOCKER_CODE_SHM_SIZE}")
     if [ -n "${DOCKER_CODE_MIRROR_URL:-}" ]; then
-        dockerd_args=(--registry-mirror "${DOCKER_CODE_MIRROR_URL}")
+        dockerd_args+=(--registry-mirror "${DOCKER_CODE_MIRROR_URL}")
 
         # Plain HTTP has to be declared per host, or the pull fails with "server gave HTTP response
         # to HTTPS client". Only 127.0.0.0/8 is exempt by default.

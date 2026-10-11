@@ -183,3 +183,65 @@ EOF
     [ "${grant_line}" -lt "${drop_line}" ]
     sed -n '/^grant_gpu_groups()/,/^}/p' "${entry}" | grep -q '" 0 65534 '
 }
+
+# A fake /sys and /dev for image/gpu.sh: render_node <name> <vram bytes or ""> <boot_vga or "">
+render_node() {
+    touch "${GPU_DEV_ROOT}/dri/$1"
+    mkdir -p "${GPU_SYS_ROOT}/class/drm/$1/device"
+    [ -z "$2" ] || echo "$2" >"${GPU_SYS_ROOT}/class/drm/$1/device/mem_info_vram_total"
+    [ -z "$3" ] || echo "$3" >"${GPU_SYS_ROOT}/class/drm/$1/device/boot_vga"
+}
+
+gpu_sh() {
+    export GPU_SYS_ROOT="${BATS_TEST_TMPDIR}/sys" GPU_DEV_ROOT="${BATS_TEST_TMPDIR}/dev"
+    mkdir -p "${GPU_SYS_ROOT}" "${GPU_DEV_ROOT}/dri"
+    # shellcheck source=../image/gpu.sh
+    . "${REPO_ROOT}/image/gpu.sh"
+}
+
+@test "a nested container gets the card with the most VRAM, not the iGPU Mesa would open first" {
+    # Measured: with every render node, Chromium in a Playwright container rendered on a Ryzen iGPU
+    # next to an idle RX 9070 XT; with the card's node alone, on the card.
+    gpu_sh
+    render_node renderD128 2147483648 0
+    render_node renderD129 17095983104 1
+    [ "$(gpu_preferred_render_node)" = "renderD129" ]
+    [ "$(gpu_nested_args amd)" = "--device /dev/kfd --device /dev/dri/renderD129" ]
+}
+
+@test "without VRAM figures the booted card wins, then the first" {
+    gpu_sh
+    render_node renderD128 "" 0
+    render_node renderD129 "" 1
+    [ "$(gpu_preferred_render_node)" = "renderD129" ]
+
+    rm -f "${GPU_SYS_ROOT}/class/drm/renderD129/device/boot_vga"
+    [ "$(gpu_preferred_render_node)" = "renderD128" ]
+}
+
+@test "nested GPU arguments per vendor, with the device groups for a --user container" {
+    gpu_sh
+    render_node renderD128 "" ""
+    [ "$(gpu_nested_args dri 987 983)" = "--device /dev/dri/renderD128 --group-add 987 --group-add 983" ]
+    [ "$(gpu_nested_args nvidia)" = "--gpus all --env NVIDIA_DRIVER_CAPABILITIES=all" ]
+    [ -z "$(gpu_nested_args "")" ]
+
+    rm -f "${GPU_DEV_ROOT}/dri/renderD128"
+    [ "$(gpu_nested_args dri)" = "--device /dev/dri" ]
+}
+
+@test "the image can hand an NVIDIA GPU on to the containers it starts" {
+    grep -q 'nvidia-container-toolkit' "${BASE_DOCKERFILE}"
+    grep -q 'nvidia.github.io/libnvidia-container/gpgkey' "${BASE_DOCKERFILE}"
+    grep -q 'COPY image/gpu.sh /usr/local/bin/docker-code-gpu.sh' "${BASE_DOCKERFILE}"
+    grep -q 'nvidia-ctk cdi generate' "${REPO_ROOT}/image/entrypoint.sh"
+    grep -q -- '--default-shm-size' "${REPO_ROOT}/image/entrypoint.sh"
+    grep -q -- '--default-shm-size' "${REPO_ROOT}/image/user-init.sh"
+}
+
+@test "every agent's instructions explain the GPU in nested containers" {
+    for file in $(grep -rl 'You are running inside a docker-code container' "${REPO_ROOT}/agents"); do
+        grep -q 'DOCKER_CODE_GPU_ARGS' "${file}" || { echo "${file} lacks the GPU section"; return 1; }
+        grep -q -- '--use-angle=gl-egl' "${file}" || { echo "${file} lacks the Chromium flags"; return 1; }
+    done
+}

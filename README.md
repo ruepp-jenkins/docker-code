@@ -111,7 +111,8 @@ Everything via environment variable so that it composes itself with the wrapper.
 | `DIND=0` \| `rootless` \| `privileged` | `privileged` | inner docker daemon |
 | `LOCAL=1` | `0` | use the common local models |
 | `LOCAL_MODEL=<name>` | | which (`docker-code models list`) |
-| `GPU=0` \| `nvidia` \| `amd` \| `dri` \| `device=<n>` | `auto` | pass the host's GPU into the session — detected by default ([GPU.md](docs/GPU.md)) |
+| `GPU=0` \| `nvidia` \| `amd` \| `dri` \| `device=<n>` | `auto` | pass the host's GPU into the session and the containers it starts — detected by default ([GPU.md](docs/GPU.md)) |
+| `SHM_SIZE=4g` | `2g` | `/dev/shm` of the session and of the containers it starts; `0` is Docker's 64 MB ([GPU.md](docs/GPU.md#shared-memory)) |
 | `DETACH=1` | `0` | start the session in the background ([Background sessions](#background-sessions-and-remote-control)) |
 | `REMOTE=1` | `0` | enable the agent's remote control; `<agent>-docker-remote` sets it ([REMOTE.md](docs/REMOTE.md)) |
 | `NAME=<name>` | directory name | a remote session's name, in the vendor's app and in the container name |
@@ -283,6 +284,23 @@ Sign-in, pairing the phone and what to do when it does not connect, per agent:
 
 ---
 
+## GPU and browsers
+
+A GPU on the host is detected and passed into every session, and on into the containers the agent
+starts there — `docker run $DOCKER_CODE_GPU_ARGS …`. Playwright tests run in the Playwright image with
+a `/dev/shm` of 2 GB at both levels, and with two Chromium flags WebGL renders on the card instead of
+in software:
+
+```bash
+docker run --rm $DOCKER_CODE_GPU_ARGS -v "$PWD":/src -w /src mcr.microsoft.com/playwright:v1.64.0-noble \
+  npx playwright test      # with launchOptions.args: --use-angle=gl-egl --ignore-gpu-blocklist
+```
+
+NVIDIA, AMD and Intel, the choice between an iGPU and a discrete card, compose files and how to
+check that a test really ran on the GPU: [GPU.md](docs/GPU.md).
+
+---
+
 ## Local models in three lines
 
 ```bash
@@ -304,7 +322,7 @@ The agent sessions themselves get the host's GPU automatically — [GPU.md](docs
 - **[LOCAL-MODELS.md](docs/LOCAL-MODELS.md)** — the shared model store, Ollama and the gateway.
 - **[REGISTRY.md](docs/REGISTRY.md)** — Images, tags and the pull-through cache.
 - **[REMOTE.md](docs/REMOTE.md)** — background sessions and remote control from web and mobile.
-- **[GPU.md](docs/GPU.md)** — the host's GPU in a session: detection, settings, compose.
+- **[GPU.md](docs/GPU.md)** — the host's GPU in sessions and the containers they start; Playwright and WebGL on real hardware.
 
 ```bash
 docker-code list       # List available agents

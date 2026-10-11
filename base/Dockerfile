@@ -87,11 +87,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/githubcli.list; \
     \
+    # The NVIDIA Container Toolkit, for the *inner* daemon: the host's toolkit hands the session the
+    # driver, and this is what lets the session hand it on to the containers an agent starts —
+    # `docker run --gpus all` inside. No driver comes from here; it has to match the host's kernel
+    # module, so it can only ever be the host's. See docs/GPU.md.
+    fetch_key https://nvidia.github.io/libnvidia-container/gpgkey \
+        /etc/apt/keyrings/nvidia-container-toolkit.asc C95B321B61E88C1809C4F759DDCAE044F796ECB0; \
+    echo "deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.asc] https://nvidia.github.io/libnvidia-container/stable/deb/${arch} /" \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list; \
+    \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         docker-ce docker-ce-cli containerd.io \
         docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras \
-        nodejs gh
+        nodejs gh nvidia-container-toolkit
 
 # --------------------------------------------------------------------------------------------------
 # The container user
@@ -120,9 +129,11 @@ COPY image/entrypoint.sh image/user-init.sh image/launch.sh \
 # Under a name of its own rather than compose.sh: it is a command the agent runs (the /remote skill),
 # not a step of the entrypoint chain, and a name that says what it is for is what the skill can call.
 COPY image/compose.sh /usr/local/bin/docker-code-compose
+COPY image/gpu.sh /usr/local/bin/docker-code-gpu.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/user-init.sh \
                /usr/local/bin/launch.sh /usr/local/bin/init-firewall.sh \
-               /usr/local/bin/local-models.sh /usr/local/bin/docker-code-compose
+               /usr/local/bin/local-models.sh /usr/local/bin/docker-code-compose \
+               /usr/local/bin/docker-code-gpu.sh
 
 # No per-tool config-dir variable is needed here, unlike the single-tool original: /home/agent as a
 # whole is the persistent bind mount, so every path a tool invents under it persists by default —
@@ -146,6 +157,8 @@ RUN set -eux; \
     git --version; \
     socat -V >/dev/null; \
     gosu agent true; \
+    nvidia-ctk --version >/dev/null; \
+    command -v nvidia-container-runtime-hook >/dev/null; \
     test -x /usr/bin/dockerd-rootless.sh
 
 WORKDIR /home/agent

@@ -509,6 +509,7 @@ run_session() {
     session_mirror "${DIND_MODE}" "${NET_MODE}" "${mirror_is_default}"
     session_local_models
     session_gpu
+    session_shm
 
     if [ "${YOLO}" = "1" ] && [ "${NET_MODE}" = "full" ]; then
         warn "YOLO with unrestricted egress: a bypassed session can reach anything on the network."
@@ -830,7 +831,7 @@ compose_slug_name() {
 # ---------------------------------------------------------------------------------------------
 COMPOSE_KNOBS="NAME YOLO NET EGRESS_POLICY ALLOW_DOMAINS DENY_DOMAINS ALLOW_GITHUB DIND DOCKER_STORE \
 APPARMOR LOCAL LOCAL_MODEL SHARED MOUNT ENV GITCONFIG SSH REGISTRY_MIRROR INSECURE_REGISTRIES \
-DIND_WAIT RUN_ARGS RESTART PULL IMAGE GPU"
+DIND_WAIT RUN_ARGS RESTART PULL IMAGE GPU SHM_SIZE"
 
 # Every knob set in this shell, generic or for this agent, as NAME=value lines.
 compose_shell_settings() {
@@ -1542,7 +1543,10 @@ session_gpu() {
 
     case "${kind}" in
         nvidia)
-            run+=(--gpus "${gpus}")
+            # Without a capability list the toolkit injects compute and utility only: CUDA works,
+            # but the EGL and Vulkan libraries a browser or a game renders through stay outside, and
+            # Chromium quietly falls back to software. `all` adds graphics, video and display.
+            run+=(--gpus "${gpus}" --env NVIDIA_DRIVER_CAPABILITIES=all)
             ;;
         amd)
             # /dev/kfd is ROCm's compute interface, /dev/dri holds the render nodes; ROCm needs both.
@@ -1556,6 +1560,35 @@ session_gpu() {
     # The container side adds the agent user to the groups that own the device nodes: they keep the
     # host's numeric gid inside, which names no group the image knows (image/entrypoint.sh).
     [ -z "${kind}" ] || run+=(--env "DOCKER_CODE_GPU=${kind}")
+}
+
+# ---------------------------------------------------------------------------------------------
+# /dev/shm large enough for a browser
+#
+# Docker's 64 MB is what Chromium runs out of first: it shares rendered frames and IPC buffers
+# through /dev/shm, and a full one shows up as "Page crashed" in Playwright, or as tests that are
+# merely slow, depending on the page. Playwright's own Docker guidance is --ipc=host or a larger
+# --shm-size; the size, because --ipc=host would hand the session the host's shared memory too.
+#
+# A ceiling, not an allocation: tmpfs uses what is written into it.
+# ---------------------------------------------------------------------------------------------
+session_shm() {
+    local size number
+    size="$(agent_knob SHM_SIZE 2g)"
+    number="${size%[bBkKmMgG]}"
+    case "${size}" in
+        ""|0) ;;
+        *)
+            case "${number}" in
+                ""|*[!0-9]*)
+                    die "DOCKER_CODE_SHM_SIZE must be a size like 512m or 2g, or 0 for Docker's" \
+                        "default, not '${size}'" ;;
+            esac
+            # Forwarded as well: the inner daemon makes it the default for the containers the agent
+            # starts, where a Playwright image needs it just as much.
+            run+=(--shm-size "${size}" --env "DOCKER_CODE_SHM_SIZE=${size}")
+            ;;
+    esac
 }
 
 # Whether the device files under /dev here are the daemon's device files.

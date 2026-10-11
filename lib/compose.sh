@@ -83,6 +83,7 @@ compose_render() {
     shift
 
     local image="" container_name="" hostname="" working_dir="" restart="" pull_policy="" gpus=""
+    local shm_size=""
     local init=0 tty=0 stdin_open=0 privileged=0 network_none=0
     # Plain globals, for the same bash-3.2 reason as the arrays in bin/docker-code.
     c_labels=() c_volumes=() c_env=() c_devices=() c_security=() c_caps=() c_networks=()
@@ -100,6 +101,7 @@ compose_render() {
             --workdir) working_dir="$2"; shift ;;
             --restart) restart="$2"; shift ;;
             --pull) pull_policy="$2"; shift ;;
+            --shm-size) shm_size="$2"; shift ;;
             --label) c_labels+=("$2"); shift ;;
             --env)
                 # A variable passed through by name only must not undo one the launcher set with a
@@ -177,6 +179,7 @@ compose_render() {
     [ "${stdin_open}" = "0" ] || printf '    stdin_open: true\n'
     [ "${privileged}" = "0" ] || printf '    privileged: true\n'
     [ -z "${working_dir}" ] || printf '    working_dir: %s\n' "$(compose_quote "${working_dir}")"
+    [ -z "${shm_size}" ] || printf '    shm_size: %s\n' "$(compose_quote "${shm_size}")"
     [ "${network_none}" = "0" ] || printf '    network_mode: "none"\n'
 
     compose_list labels ${c_labels[@]+"${c_labels[@]}"}

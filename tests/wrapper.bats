@@ -431,6 +431,42 @@ esac'
     [[ "${output}" != *"services:"* ]]
 }
 
+@test "an NVIDIA session gets the graphics libraries, not only CUDA" {
+    # The toolkit's default is compute,utility: a browser in the session finds no EGL or Vulkan
+    # driver and renders in software without a word.
+    stub_nvidia_daemon
+    dry claude-docker
+    [[ "${output}" == *"--gpus all --env NVIDIA_DRIVER_CAPABILITIES=all"* ]]
+}
+
+@test "/dev/shm is large enough for a browser, in the session and one level further in" {
+    dry claude-docker
+    [[ "${output}" == *"--shm-size 2g"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_SHM_SIZE=2g"* ]]
+
+    DOCKER_CODE_QWEN_SHM_SIZE=4g dry qwen-docker
+    [[ "${output}" == *"--shm-size 4g"* ]]
+
+    DOCKER_CODE_SHM_SIZE=0 dry qwen-docker
+    [[ "${output}" != *"--shm-size"* ]]
+    [[ "${output}" != *"DOCKER_CODE_SHM_SIZE"* ]]
+}
+
+@test "a /dev/shm size Docker would refuse is refused here first" {
+    for bad in lots 2gb 1g2 -1; do
+        DOCKER_CODE_SHM_SIZE="${bad}" run "${REPO_ROOT}/bin/claude-docker"
+        [ "${status}" -ne 0 ] || { echo "accepted '${bad}'"; return 1; }
+        [[ "${output}" == *"DOCKER_CODE_SHM_SIZE"* ]]
+    done
+}
+
+@test "docker-code compose keeps the /dev/shm size" {
+    DOCKER_CODE_SHM_SIZE=3g run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'    shm_size: "3g"'* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_SHM_SIZE=3g"'* ]]
+}
+
 @test "the documented GPU values are the ones session_gpu accepts" {
     # Every value docs/GPU.md offers has a branch of its own, or is a --gpus value passed on
     # verbatim — never one that falls through to something the page does not describe.
