@@ -160,7 +160,9 @@ grant_gpu_groups() {
         gid="$(stat -c %g "${node}")"
         case " 0 65534 ${granted} " in *" ${gid} "*) continue ;; esac
 
-        group="$(getent group "${gid}" | cut -d: -f1)"
+        # `|| true`: getent exits 2 for a gid with no group, and under pipefail that would end the
+        # whole entrypoint silently — exactly the case below that creates the group.
+        group="$(getent group "${gid}" | cut -d: -f1 || true)"
         if [ -z "${group}" ]; then
             group="gpu${gid}"
             groupadd -g "${gid}" "${group}" || { log "cannot create a group for ${node}"; continue; }
