@@ -184,6 +184,17 @@ EOF
     sed -n '/^grant_gpu_groups()/,/^}/p' "${entry}" | grep -q '" 0 65534 '
 }
 
+@test "a device group the image does not know does not end the entrypoint" {
+    # getent exits 2 for an unknown gid, and under pipefail that used to end the entrypoint before
+    # the groupadd that handles exactly this case: the container died with exit 2 and no output.
+    entry="${REPO_ROOT}/image/entrypoint.sh"
+    lookup="$(sed -n '/^grant_gpu_groups()/,/^}/p' "${entry}" | grep -F 'group="$(getent group')"
+    [ -n "${lookup}" ]
+    run bash -c "set -euo pipefail; gid=64999; ${lookup}; echo reached"
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "reached" ]
+}
+
 # A fake /sys and /dev for image/gpu.sh: render_node <name> <vram bytes or ""> <boot_vga or "">
 render_node() {
     touch "${GPU_DEV_ROOT}/dri/$1"
