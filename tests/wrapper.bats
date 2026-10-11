@@ -329,6 +329,127 @@ dry() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# GPU
+# ---------------------------------------------------------------------------------------------
+# A daemon that reports the NVIDIA runtime, the way models.bats stubs it.
+stub_nvidia_daemon() {
+    make_stub docker 'case "$*" in
+    *Runtimes*) echo "io.containerd.runc.v2 nvidia runc " ;;
+esac'
+}
+
+@test "without a GPU on the host the session asks for none" {
+    # A GPU requested from a host without one is a hard docker run error, so nothing is assumed.
+    dry claude-docker
+    [[ "${output}" != *"--gpus"* ]]
+    [[ "${output}" != *"--device"* ]]
+    [[ "${output}" != *"DOCKER_CODE_GPU"* ]]
+}
+
+@test "the NVIDIA runtime gets the session every card" {
+    stub_nvidia_daemon
+    dry claude-docker
+    [[ "${output}" == *"--gpus all"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_GPU=nvidia"* ]]
+}
+
+@test "an AMD card is passed as its two device nodes" {
+    touch "${DOCKER_CODE_GPU_DEV_ROOT}/kfd"
+    mkdir "${DOCKER_CODE_GPU_DEV_ROOT}/dri"
+    dry qwen-docker
+    [[ "${output}" == *"--device /dev/kfd --device /dev/dri"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_GPU=amd"* ]]
+    [[ "${output}" != *"--gpus"* ]]
+}
+
+@test "render nodes alone are passed as /dev/dri" {
+    mkdir "${DOCKER_CODE_GPU_DEV_ROOT}/dri"
+    dry qwen-docker
+    [[ "${output}" == *"--device /dev/dri"* ]]
+    [[ "${output}" != *"/dev/kfd"* ]]
+    [[ "${output}" == *"--env DOCKER_CODE_GPU=dri"* ]]
+}
+
+@test "device files are not named for a daemon on another machine" {
+    # Docker Desktop's daemon lives in a VM, a tcp DOCKER_HOST somewhere else entirely: the /dev
+    # seen here is not theirs, and --device on a missing node refuses the start.
+    mkdir "${DOCKER_CODE_GPU_DEV_ROOT}/dri"
+    DOCKER_HOST=tcp://build.example:2376 dry claude-docker
+    [[ "${output}" != *"--device /dev/dri"* ]]
+
+    make_stub docker 'case "$*" in *OperatingSystem*) echo "Docker Desktop" ;; esac'
+    dry claude-docker
+    [[ "${output}" != *"--device /dev/dri"* ]]
+}
+
+@test "the GPU can be switched off, forced, or pinned, per agent" {
+    stub_nvidia_daemon
+    DOCKER_CODE_CODEX_GPU=0 dry codex-docker
+    [[ "${output}" != *"--gpus"* ]]
+
+    DOCKER_CODE_GPU=device=1 dry codex-docker
+    [[ "${output}" == *"--gpus device=1"* ]]
+
+    make_stub docker
+    DOCKER_CODE_GPU=amd dry codex-docker
+    [[ "${output}" == *"--device /dev/kfd --device /dev/dri"* ]]
+}
+
+@test "a remote session gets the GPU like any other" {
+    stub_nvidia_daemon
+    dry claude-docker-remote
+    [[ "${output}" == *"--gpus all"* ]]
+}
+
+@test "docker-code compose reserves the NVIDIA GPU the way compose spells it" {
+    stub_nvidia_daemon
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"    deploy:"* ]]
+    [[ "${output}" == *'            - driver: "nvidia"'* ]]
+    [[ "${output}" == *"              count: all"* ]]
+    [[ "${output}" == *'- "DOCKER_CODE_GPU=nvidia"'* ]]
+
+    DOCKER_CODE_GPU=device=0,2 run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *$'device_ids:\n                - "0"\n                - "2"'* ]]
+}
+
+@test "docker-code compose carries AMD and render devices as devices" {
+    touch "${DOCKER_CODE_GPU_DEV_ROOT}/kfd"
+    mkdir "${DOCKER_CODE_GPU_DEV_ROOT}/dri"
+    run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *$'    devices:\n      - "/dev/kfd"\n      - "/dev/dri"'* ]]
+    [[ "${output}" != *"deploy:"* ]]
+}
+
+@test "docker-code compose refuses a --gpus it would only half translate" {
+    DOCKER_CODE_GPU='"capabilities=compute,utility"' run "${REPO_ROOT}/bin/docker-code" compose --stdout claude
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"has no translation"* ]]
+    [[ "${output}" != *"services:"* ]]
+}
+
+@test "the documented GPU values are the ones session_gpu accepts" {
+    # Every value docs/GPU.md offers has a branch of its own, or is a --gpus value passed on
+    # verbatim — never one that falls through to something the page does not describe.
+    block="$(sed -n '/^session_gpu()/,/^}/p' "${REPO_ROOT}/bin/docker-code")"
+    values="$(sed -n '/^## Setting it/,/^## /p' "${REPO_ROOT}/docs/GPU.md" |
+        grep '^| ' | tail -n +3 | cut -d'|' -f2 | grep -o '`[^`]*`' | tr -d '`')"
+    [ -n "${values}" ]
+    for value in ${values}; do
+        case "${value}" in
+            device=*|[0-9]) continue ;;
+        esac
+        printf '%s\n' "${block}" | grep -qE "^ *([a-z0-9|]+\|)?${value}(\|[a-z0-9|]+)?\)" || {
+            echo "docs/GPU.md documents DOCKER_CODE_GPU=${value}, session_gpu has no branch for it"
+            return 1
+        }
+    done
+}
+
+# ---------------------------------------------------------------------------------------------
 # State directory resolution
 # ---------------------------------------------------------------------------------------------
 @test "a relative DOCKER_CODE_HOME is refused, because Docker would make it a volume" {

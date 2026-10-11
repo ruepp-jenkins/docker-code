@@ -89,7 +89,7 @@ EOF
 
 @test "the files the docs point at exist" {
     for doc in README.md AGENTS.md ai/adding-an-agent.md docs/LOCAL-MODELS.md docs/REGISTRY.md \
-               docs/EGRESS.md docs/REMOTE.md; do
+               docs/EGRESS.md docs/REMOTE.md docs/GPU.md; do
         [ -f "${REPO_ROOT}/${doc}" ] || { echo "${doc} is missing"; return 1; }
     done
 }

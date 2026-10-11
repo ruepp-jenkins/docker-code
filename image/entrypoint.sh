@@ -136,6 +136,44 @@ align_user_ids() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# GPU device nodes, readable by the agent
+#
+# A device passed with --device keeps its host owner, and that owner is a gid — video, render — whose
+# number on the host means nothing to this image's /etc/group. Root can open the node regardless;
+# the agent, dropped to its own user, gets "Permission denied" from ROCm or Mesa and quietly falls
+# back to the CPU. So the agent joins whichever group owns each node, under the gid it has here.
+#
+# gosu reads supplementary groups from /etc/group when it switches user, which is why a membership
+# written here reaches the agent; --group-add on the docker run would only have reached root.
+#
+# NVIDIA's nodes are world-readable by default, but a host that tightened them is handled the same.
+# gid 0 is skipped: membership in root's group is a different grant from a GPU. So is the overflow
+# gid a rootless daemon shows for ids it cannot map — no group here would change what it allows.
+# ---------------------------------------------------------------------------------------------
+grant_gpu_groups() {
+    [ -n "${DOCKER_CODE_GPU:-}" ] || return 0
+    [ "${RUN_AS_ROOT}" = "0" ] || return 0
+
+    local node gid group granted=""
+    for node in /dev/kfd /dev/dri/renderD* /dev/dri/card* /dev/nvidia*; do
+        [ -c "${node}" ] || continue
+        gid="$(stat -c %g "${node}")"
+        case " 0 65534 ${granted} " in *" ${gid} "*) continue ;; esac
+
+        group="$(getent group "${gid}" | cut -d: -f1)"
+        if [ -z "${group}" ]; then
+            group="gpu${gid}"
+            groupadd -g "${gid}" "${group}" || { log "cannot create a group for ${node}"; continue; }
+        fi
+        # A GPU the agent cannot open is a slower session, not a reason to have none.
+        usermod -a -G "${group}" "${AGENT_USER}" || { log "cannot add ${AGENT_USER} to ${group}"; continue; }
+        granted="${granted} ${gid}"
+    done
+
+    [ -z "${granted}" ] || log "GPU (${DOCKER_CODE_GPU}): ${AGENT_USER} joined the device groups${granted}"
+}
+
+# ---------------------------------------------------------------------------------------------
 # Seed the home directory — never overwrite
 #
 # The defaults live in /opt rather than in the image's home directory on purpose. Docker does not
@@ -290,6 +328,7 @@ EOF
 }
 
 align_user_ids
+grant_gpu_groups
 seed_home
 seed_defaults
 prepare_runtime_dir

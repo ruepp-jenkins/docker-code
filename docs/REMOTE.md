@@ -116,7 +116,8 @@ without a terminal; `--ask` asks even then. `--stdout` prints the file instead o
 `--force` replaces an existing `compose.yml`.
 
 The file is generated from exactly the `docker run` that `claude-docker-remote` would execute with
-those settings, so `DOCKER_CODE_YOLO`, `DIND`, `LOCAL`, `MOUNT` and the rest carry over, and the
+those settings, so `DOCKER_CODE_YOLO`, `DIND`, `LOCAL`, `MOUNT`, the detected GPU
+([GPU.md](GPU.md#with-docker-compose)) and the rest carry over, and the
 container name is the same — compose and the command replace each other rather than running side by
 side.
 

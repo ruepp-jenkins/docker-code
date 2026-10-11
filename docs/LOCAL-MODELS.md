@@ -200,6 +200,8 @@ DOCKER_CODE_DRY_RUN=1 claude-docker        # Show no docker-code-net and no ANTH
 
 ## GPU
 
+This section is about Ollama's container. The agent sessions get the host's GPU on their own, detected at every start — see [GPU.md](GPU.md).
+
 Without a GPU, a 14B model calculates on the CPU - it works, but is about an order of magnitude slower. Ollama doesn't decide this himself: the container gets the card passed through, or he doesn't get it.
 
 Two manufacturers, two completely different ways into the container: NVIDIA via a container runtime that injects the card (`--gpus`), AMD via two device files that you submit yourself (`--device`) — plus a different image. That's why `DOCKER_CODE_MODELS_GPU` is not a switch, but a choice:

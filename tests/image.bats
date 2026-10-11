@@ -172,3 +172,14 @@ EOF
 ${from_lines}
 EOF
 }
+
+@test "the agent joins the GPU's device groups before root is dropped" {
+    # The nodes keep the host's gid, which the image's /etc/group does not know; gosu only carries
+    # memberships it finds there. Root's own group is never one of them.
+    entry="${REPO_ROOT}/image/entrypoint.sh"
+    grant_line="$(grep -n '^grant_gpu_groups$' "${entry}" | cut -d: -f1)"
+    drop_line="$(grep -n '^exec gosu' "${entry}" | cut -d: -f1)"
+    [ -n "${grant_line}" ] && [ -n "${drop_line}" ]
+    [ "${grant_line}" -lt "${drop_line}" ]
+    sed -n '/^grant_gpu_groups()/,/^}/p' "${entry}" | grep -q '" 0 65534 '
+}

@@ -167,10 +167,6 @@ models_start_ollama() {
     # A GPU if the host has one wired into Docker; CPU inference otherwise. Asking for a GPU that is
     # not there is a hard `docker run` error, so `auto` detects rather than assumes.
     #
-    # Only the runtime *names* are matched, not the whole .Runtimes structure: that renders as ~6 KB
-    # of capability and seccomp detail per runtime, and grepping it for a vendor name is a false
-    # positive waiting to happen.
-    #
     # The detection sees the NVIDIA Container Toolkit's registered runtime. A host wired up through
     # CDI only has no such runtime, so `auto` finds nothing there and falls back to the CPU — which
     # is why the value is more than a boolean: DOCKER_CODE_MODELS_GPU=1 forces `--gpus all`, `rocm`
@@ -181,8 +177,7 @@ models_start_ollama() {
         0|false|none|off)
             ;;
         auto)
-            if docker info --format '{{range $name, $r := .Runtimes}}{{$name}} {{end}}' 2>/dev/null |
-                grep -qw nvidia; then
+            if docker_has_nvidia_runtime; then
                 models_ollama_create+=(--gpus all)
             elif [ -e /dev/kfd ]; then
                 # An AMD card is not auto-detected into use, because using it means pulling a second,
@@ -263,6 +258,18 @@ models_start_ollama() {
             ;;
     esac
     return 1
+}
+
+# Whether the daemon has the NVIDIA Container Toolkit's runtime registered — the one thing that makes
+# `--gpus` work rather than fail the start. Shared with the agent sessions (session_gpu in
+# bin/docker-code), which detect the same way for the same reason.
+#
+# Only the runtime *names* are matched, not the whole .Runtimes structure: that renders as ~6 KB of
+# capability and seccomp detail per runtime, and grepping it for a vendor name is a false positive
+# waiting to happen.
+docker_has_nvidia_runtime() {
+    docker info --format '{{range $name, $r := .Runtimes}}{{$name}} {{end}}' 2>/dev/null |
+        grep -qw nvidia
 }
 
 models_start_litellm() {

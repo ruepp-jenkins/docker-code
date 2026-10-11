@@ -508,6 +508,7 @@ run_session() {
     session_network "${NET_MODE}"
     session_mirror "${DIND_MODE}" "${NET_MODE}" "${mirror_is_default}"
     session_local_models
+    session_gpu
 
     if [ "${YOLO}" = "1" ] && [ "${NET_MODE}" = "full" ]; then
         warn "YOLO with unrestricted egress: a bypassed session can reach anything on the network."
@@ -829,7 +830,7 @@ compose_slug_name() {
 # ---------------------------------------------------------------------------------------------
 COMPOSE_KNOBS="NAME YOLO NET EGRESS_POLICY ALLOW_DOMAINS DENY_DOMAINS ALLOW_GITHUB DIND DOCKER_STORE \
 APPARMOR LOCAL LOCAL_MODEL SHARED MOUNT ENV GITCONFIG SSH REGISTRY_MIRROR INSECURE_REGISTRIES \
-DIND_WAIT RUN_ARGS RESTART PULL IMAGE"
+DIND_WAIT RUN_ARGS RESTART PULL IMAGE GPU"
 
 # Every knob set in this shell, generic or for this agent, as NAME=value lines.
 compose_shell_settings() {
@@ -1485,6 +1486,90 @@ session_local_models() {
 # that configure its tool, not every secret that happens to be exported in the calling shell. The
 # per-tool half comes from AGENT_ENV_VARS; the list below is what any agent in a terminal needs.
 # ---------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------
+# The host's GPU, handed to the session
+#
+# Three vendors, two ways in. NVIDIA arrives through the Container Toolkit's runtime, which injects
+# the device nodes *and* the driver libraries that match the host's kernel module — `--gpus`. AMD and
+# Intel have no such runtime: their device nodes are named with `--device`, and the userspace (ROCm,
+# Mesa, oneAPI) is whatever the session installs or runs in a nested container.
+#
+# `auto` detects rather than assumes, for the reason the Ollama start does: a GPU requested from a
+# host that cannot provide one is a hard `docker run` error, and a session that refuses to start
+# over an accelerator it never needed is worse than one without it.
+#
+# The device files are looked for on *this* machine, which is only the daemon's machine when the
+# daemon is local. Docker Desktop runs its daemon in a VM that has none of them, and a DOCKER_HOST
+# pointing elsewhere has other ones, so in both cases `auto` asks only the daemon (for NVIDIA) and
+# names no device.
+#
+# DOCKER_CODE_GPU_DEV_ROOT is the test suite's seam: the host's /dev decides the argv otherwise, and
+# the suite has to come out the same on a workstation with a Radeon and in a CI container without.
+# ---------------------------------------------------------------------------------------------
+session_gpu() {
+    local mode dev="${DOCKER_CODE_GPU_DEV_ROOT:-/dev}" kind="" gpus=all
+    mode="$(agent_knob GPU auto)"
+
+    case "${mode}" in
+        0|false|none|off)
+            ;;
+        auto)
+            if docker_has_nvidia_runtime; then
+                kind=nvidia
+            elif ! gpu_daemon_is_local; then
+                :
+            elif [ -e "${dev}/kfd" ] && [ -d "${dev}/dri" ]; then
+                kind=amd
+            elif [ -d "${dev}/dri" ]; then
+                kind=dri
+            fi
+            ;;
+        1|true|all|nvidia)
+            kind=nvidia
+            ;;
+        amd|rocm|amdgpu)
+            kind=amd
+            ;;
+        dri|intel)
+            kind=dri
+            ;;
+        *)
+            # Anything else is a --gpus value, verbatim: "device=0", "2", "device=GPU-3a2b…".
+            gpus="${mode}"
+            kind=nvidia
+            ;;
+    esac
+
+    case "${kind}" in
+        nvidia)
+            run+=(--gpus "${gpus}")
+            ;;
+        amd)
+            # /dev/kfd is ROCm's compute interface, /dev/dri holds the render nodes; ROCm needs both.
+            run+=(--device /dev/kfd --device /dev/dri)
+            ;;
+        dri)
+            run+=(--device /dev/dri)
+            ;;
+    esac
+
+    # The container side adds the agent user to the groups that own the device nodes: they keep the
+    # host's numeric gid inside, which names no group the image knows (image/entrypoint.sh).
+    [ -z "${kind}" ] || run+=(--env "DOCKER_CODE_GPU=${kind}")
+}
+
+# Whether the device files under /dev here are the daemon's device files.
+gpu_daemon_is_local() {
+    case "${DOCKER_HOST:-}" in
+        ""|unix://*) ;;
+        *) return 1 ;;
+    esac
+    case "$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)" in
+        *"Docker Desktop"*) return 1 ;;
+    esac
+    return 0
+}
+
 session_passthrough() {
     # Plain globals rather than locals: array compound assignment to a local is one of the places
     # where the bash macOS ships still surprises people.

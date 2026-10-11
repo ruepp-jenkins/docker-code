@@ -84,6 +84,7 @@ To use another location, set `export DOCKER_CODE_HOME=/absolute/path`.
 | the directory from which you started it (rw) | any other path on the host |
 | `~/docker-code/models/` (ro, only with `DOCKER_CODE_LOCAL=1`) | `/var/run/docker.sock` — **never** mounted |
 | explicit extras via `DOCKER_CODE_MOUNT` | `~/.gitconfig`, `$SSH_AUTH_SOCK` (opt-in, off by default) |
+| the host's GPU, when one is detected (`DOCKER_CODE_GPU=0` turns it off) | |
 | the API keys its own tool reads, from your shell | every other variable in your environment |
 
 Starting from the home directory or from `/` is **rejected**, not just criticized. `tests/isolation.bats` keeps this list as a negative assertion so that it doesn't grow unnoticed.
@@ -110,6 +111,7 @@ Everything via environment variable so that it composes itself with the wrapper.
 | `DIND=0` \| `rootless` \| `privileged` | `privileged` | inner docker daemon |
 | `LOCAL=1` | `0` | use the common local models |
 | `LOCAL_MODEL=<name>` | | which (`docker-code models list`) |
+| `GPU=0` \| `nvidia` \| `amd` \| `dri` \| `device=<n>` | `auto` | pass the host's GPU into the session — detected by default ([GPU.md](docs/GPU.md)) |
 | `DETACH=1` | `0` | start the session in the background ([Background sessions](#background-sessions-and-remote-control)) |
 | `REMOTE=1` | `0` | enable the agent's remote control; `<agent>-docker-remote` sets it ([REMOTE.md](docs/REMOTE.md)) |
 | `NAME=<name>` | directory name | a remote session's name, in the vendor's app and in the container name |
@@ -293,7 +295,7 @@ This means you don't have to adjust anything manually. If you still configure yo
 
 Claude Code, Codex, Qwen, Mistral Vibe, OpenCode, and Gemini CLI support local models. Cursor, Copilot, and Kiro use provider-hosted models and report that limitation when requested.
 
-On the **GPU** instead of the CPU: NVIDIA is recognized, AMD is one line — `DOCKER_CODE_MODELS_GPU=rocm` passes the card through *and* takes the ROCm image. Both, including `HSA_OVERRIDE_GFX_VERSION` for cards that ROCm does not recognize by itself, are available under [GPU](docs/LOCAL-MODELS.md#gpu).
+The agent sessions themselves get the host's GPU automatically — [GPU.md](docs/GPU.md). For Ollama on the **GPU** instead of the CPU: NVIDIA is recognized, AMD is one line — `DOCKER_CODE_MODELS_GPU=rocm` passes the card through *and* takes the ROCm image. Both, including `HSA_OVERRIDE_GFX_VERSION` for cards that ROCm does not recognize by itself, are available under [GPU](docs/LOCAL-MODELS.md#gpu).
 
 ---
 
@@ -302,6 +304,7 @@ On the **GPU** instead of the CPU: NVIDIA is recognized, AMD is one line — `DO
 - **[LOCAL-MODELS.md](docs/LOCAL-MODELS.md)** — the shared model store, Ollama and the gateway.
 - **[REGISTRY.md](docs/REGISTRY.md)** — Images, tags and the pull-through cache.
 - **[REMOTE.md](docs/REMOTE.md)** — background sessions and remote control from web and mobile.
+- **[GPU.md](docs/GPU.md)** — the host's GPU in a session: detection, settings, compose.
 
 ```bash
 docker-code list       # List available agents

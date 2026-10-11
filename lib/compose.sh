@@ -82,7 +82,7 @@ compose_render() {
     local service="$1"
     shift
 
-    local image="" container_name="" hostname="" working_dir="" restart="" pull_policy=""
+    local image="" container_name="" hostname="" working_dir="" restart="" pull_policy="" gpus=""
     local init=0 tty=0 stdin_open=0 privileged=0 network_none=0
     # Plain globals, for the same bash-3.2 reason as the arrays in bin/docker-code.
     c_labels=() c_volumes=() c_env=() c_devices=() c_security=() c_caps=() c_networks=()
@@ -112,6 +112,18 @@ compose_render() {
                 shift
                 ;;
             --device) c_devices+=("$2"); shift ;;
+            --gpus)
+                # Checked here with the other refusals, before a line of the file is printed.
+                case "$2" in
+                    all|device=?*|[1-9]|[1-9][0-9]) gpus="$2" ;;
+                    *)
+                        echo "compose: '--gpus $2' has no translation here; use all, a count or" \
+                             "device=<ids>, and add the rest to compose.yml by hand" >&2
+                        return 1
+                        ;;
+                esac
+                shift
+                ;;
             --security-opt) c_security+=("$2"); shift ;;
             --cap-add) c_caps+=("$2"); shift ;;
             --network)
@@ -175,6 +187,7 @@ compose_render() {
     compose_list cap_add ${c_caps[@]+"${c_caps[@]}"}
     compose_list networks ${c_networks[@]+"${c_networks[@]}"}
     compose_list command ${c_command[@]+"${c_command[@]}"}
+    compose_gpus "${gpus}"
 
     if [ "${egress}" = "1" ]; then
         # Started and answering before the session, as egress_wait_ready makes sure of for the
@@ -231,6 +244,37 @@ compose_render() {
         printf '\nconfigs:\n  squid:\n    content: |\n'
         printf '%s\n' "${COMPOSE_EGRESS_CONF}" | sed -e 's/\$/$$/g' -e 's/^/      /' -e 's/^ *$//'
     fi
+}
+
+# compose_gpus <--gpus value>
+#
+# `--gpus` has no field of the same name in every compose release still around, but the device
+# reservation it stands for has been in the spec from the start: the same request to the NVIDIA
+# runtime, spelled as YAML. Only all, a count and device=<ids> come this far — compose_render refuses
+# the CLI's capability and driver options, because a GPU request half translated would start the
+# session on the wrong card rather than fail.
+compose_gpus() {
+    local value="$1" id
+    [ -n "${value}" ] || return 0
+
+    printf '    deploy:\n      resources:\n        reservations:\n          devices:\n'
+    printf '            - driver: "nvidia"\n'
+    case "${value}" in
+        all)
+            printf '              count: all\n'
+            ;;
+        device=*)
+            printf '              device_ids:\n'
+            IFS=',' read -r -a c_gpu_ids <<<"${value#device=}"
+            for id in "${c_gpu_ids[@]}"; do
+                printf '                - %s\n' "$(compose_quote "${id}")"
+            done
+            ;;
+        *)
+            printf '              count: %s\n' "${value}"
+            ;;
+    esac
+    printf '              capabilities: ["gpu"]\n'
 }
 
 compose_env_has() {

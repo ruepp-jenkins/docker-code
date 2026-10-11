@@ -88,6 +88,10 @@ setup_wrapper_env() {
     export DOCKER_CODE_HOME="${HOME}/docker-code"
     export DOCKER_CODE_DRY_RUN=1
     export DOCKER_CODE_TAG=test
+    # An empty /dev for GPU detection: the host's own would put --device into every argv on a
+    # workstation and none into it in CI. Tests that want a GPU create the nodes they need here.
+    export DOCKER_CODE_GPU_DEV_ROOT="${BATS_TEST_TMPDIR}/dev"
+    mkdir -p "${DOCKER_CODE_GPU_DEV_ROOT}"
 
     WORKSPACE="${BATS_TEST_TMPDIR}/workspace"
     mkdir -p "${HOME}" "${WORKSPACE}"
