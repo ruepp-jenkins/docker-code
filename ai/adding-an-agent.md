@@ -52,6 +52,8 @@ next with `\`.
 | `AGENT_NOTE` | — | One-sentence limitation; required when `AGENT_LOCAL_MODE=none` |
 | `AGENT_REMOTE_ARGS` | — | Flags prepended when `DOCKER_CODE_REMOTE=1`, unless the user typed the flag or its `--no-` form; a `%n` word becomes the session name (`DOCKER_CODE_NAME`, default the directory) |
 | `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon; see [Remote control](../docs/REMOTE.md) |
+| `AGENT_REMOTE_RESUME_ARGS` | — | Flags added after `AGENT_REMOTE_ARGS` when `AGENT_REMOTE_RESUME_DIR` already holds a `*.jsonl`, so a restarted remote session rejoins its conversation instead of opening an empty one |
+| `AGENT_REMOTE_RESUME_DIR` | — | Where the tool keeps this directory's transcripts; `%h` is `$HOME`, `%p` the working directory with every non-alphanumeric character replaced by `-` |
 
 Setting either remote key also gives the agent a `<wrapper>-remote` command. Add its symlink with
 `ln -s docker-code bin/<wrapper>-remote`; the installer derives it on its own. Copy the `/remote`

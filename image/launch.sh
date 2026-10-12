@@ -77,6 +77,8 @@ AGENT_ROOT_ENV="$(agent_get AGENT_ROOT_ENV)"
 AGENT_LOCAL_ARGS="$(agent_get AGENT_LOCAL_ARGS)"
 AGENT_REMOTE_ARGS="$(agent_get AGENT_REMOTE_ARGS)"
 AGENT_REMOTE_START="$(agent_get AGENT_REMOTE_START)"
+AGENT_REMOTE_RESUME_ARGS="$(agent_get AGENT_REMOTE_RESUME_ARGS)"
+AGENT_REMOTE_RESUME_DIR="$(agent_get AGENT_REMOTE_RESUME_DIR)"
 
 [ -n "${AGENT_PERMISSION_FLAGS}" ] || AGENT_PERMISSION_FLAGS="${AGENT_YOLO_ARGS}"
 
@@ -162,6 +164,29 @@ has_remote_flag() {
     return 1
 }
 
+# Whether this directory already has a conversation to join. Only the directory is looked at, not
+# which conversation: the tool's own --continue picks the latest one, which is the point.
+has_resumable_session() {
+    [ -n "${AGENT_REMOTE_RESUME_ARGS}" ] && [ -n "${AGENT_REMOTE_RESUME_DIR}" ] || return 1
+    local dir="${AGENT_REMOTE_RESUME_DIR}" encoded
+    encoded="$(printf '%s' "${PWD}" | LC_ALL=C tr -c 'a-zA-Z0-9' '-')"
+    dir="${dir//"%h"/${HOME}}"
+    dir="${dir//"%p"/${encoded}}"
+    compgen -G "${dir}/*.jsonl" >/dev/null
+}
+
+# A flag of the resume family typed by the user is a decision about this session: joining another
+# conversation or starting a prompt of their own must not be turned into a second --continue.
+has_resume_flag() {
+    local arg flag
+    for arg in "$@"; do
+        for flag in ${AGENT_REMOTE_RESUME_ARGS} -c -r --resume --session-id; do
+            case "${arg}" in "${flag}"|"${flag}"=*) return 0 ;; esac
+        done
+    done
+    return 1
+}
+
 if [ "${DOCKER_CODE_REMOTE:-0}" = "1" ] && ! is_subcommand "${1:-}"; then
     # Some tools serve remote control from a daemon of their own that the interactive client then
     # joins, rather than from a flag on the client. Started before the exec, because after it there
@@ -187,6 +212,11 @@ if [ "${DOCKER_CODE_REMOTE:-0}" = "1" ] && ! is_subcommand "${1:-}"; then
                 args+=("${word}")
             fi
         done
+        # Joined again rather than started again: see AGENT_REMOTE_RESUME_ARGS in agents/claude/agent.env.
+        if has_resumable_session && ! has_resume_flag "$@"; then
+            # shellcheck disable=SC2206  # a flag list, deliberately word-split
+            args+=(${AGENT_REMOTE_RESUME_ARGS})
+        fi
     fi
 fi
 

@@ -69,6 +69,9 @@ the numbered sessions for theirs.
 
 ### It restarts by itself
 
+A restarted Claude session continues the previous conversation in that directory (`--continue`, added
+automatically once a transcript exists); the first start begins a new one.
+
 A remote session in the background is started with Docker's restart policy `unless-stopped`: when
 the agent exits, the Docker daemon restarts or the host reboots, it comes back on its own — with a
 new conversation, since the old process is gone. `docker stop` ends it for good.
@@ -337,6 +340,10 @@ and never in front of a subcommand from `AGENT_YOLO_SKIP`:
 
 - `AGENT_REMOTE_ARGS` — flags prepended to the agent's arguments, unless the user typed the flag or
   its `--no-` form. A word `%n` becomes the session name as one argument, or is dropped without one.
+- `AGENT_REMOTE_RESUME_ARGS` and `AGENT_REMOTE_RESUME_DIR` — on a restart the session rejoins its
+  conversation: the flags are added only when the directory already holds a transcript, so the first
+  start creates the session and every later one continues it. A resume flag the user typed
+  (`-c`, `-r`, `--resume`, `--session-id`) wins.
 - `AGENT_REMOTE_START` — a subcommand of `AGENT_BIN` run before the agent, for tools whose remote
   control is a daemon.
 

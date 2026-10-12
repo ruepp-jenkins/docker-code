@@ -260,3 +260,36 @@ EOF
     run bash "${LAUNCH}" -p hi
     [ "$(args_line)" = "-p hi" ]
 }
+
+@test "a remote session starts fresh the first time and continues once a transcript exists" {
+    use_agent claude
+    export DOCKER_CODE_REMOTE=1 DOCKER_CODE_SESSION_NAME=s HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}" "${BATS_TEST_TMPDIR}/my.proj"
+    cd "${BATS_TEST_TMPDIR}/my.proj"
+    run bash "${LAUNCH}"
+    [ "$(args_line)" = "--remote-control s" ]
+
+    encoded="$(printf '%s' "${PWD}" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "${HOME}/.claude/projects/${encoded}"
+    touch "${HOME}/.claude/projects/${encoded}/abc.jsonl"
+    run bash "${LAUNCH}"
+    [ "$(args_line)" = "--remote-control s --continue" ]
+
+    run bash "${LAUNCH}" --resume abc
+    [ "$(args_line)" = "--remote-control s --resume abc" ]
+}
+
+@test "a normal session never continues by itself, even with a transcript in place" {
+    use_agent claude
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}" "${BATS_TEST_TMPDIR}/proj"
+    cd "${BATS_TEST_TMPDIR}/proj"
+    encoded="$(printf '%s' "${PWD}" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "${HOME}/.claude/projects/${encoded}"
+    touch "${HOME}/.claude/projects/${encoded}/abc.jsonl"
+
+    run bash "${LAUNCH}"
+    [ "$(args_line)" = "" ]
+    run bash "${LAUNCH}" -c
+    [ "$(args_line)" = "-c" ]
+}
