@@ -79,6 +79,8 @@ AGENT_REMOTE_ARGS="$(agent_get AGENT_REMOTE_ARGS)"
 AGENT_REMOTE_START="$(agent_get AGENT_REMOTE_START)"
 AGENT_REMOTE_RESUME_ARGS="$(agent_get AGENT_REMOTE_RESUME_ARGS)"
 AGENT_REMOTE_RESUME_DIR="$(agent_get AGENT_REMOTE_RESUME_DIR)"
+AGENT_REMOTE_SEED_FILE="$(agent_get AGENT_REMOTE_SEED_FILE)"
+AGENT_REMOTE_SEED_JQ="$(agent_get AGENT_REMOTE_SEED_JQ)"
 
 [ -n "${AGENT_PERMISSION_FLAGS}" ] || AGENT_PERMISSION_FLAGS="${AGENT_YOLO_ARGS}"
 
@@ -187,7 +189,35 @@ has_resume_flag() {
     return 1
 }
 
+# A remote session has nobody at the terminal to click through the tool's first-run questions (theme,
+# "do you trust this folder"), and the state that answers them lives in a file that does not reliably
+# survive: it sits loose in the home directory, so a sync tool over ~/docker-code or a lost write
+# hands the next restart an empty one, and the session then waits at a dialog forever. The jq program
+# is applied over whatever is there (an empty or unreadable file counts as {}), written to a temp file
+# and renamed so a crash cannot leave half a file. A failure only warns: the session is still worth
+# starting, and the dialog is the tool's own fallback.
+seed_remote_state() {
+    [ -n "${AGENT_REMOTE_SEED_FILE}" ] && [ -n "${AGENT_REMOTE_SEED_JQ}" ] || return 0
+    local file="${AGENT_REMOTE_SEED_FILE//"%h"/${HOME}}" tmp
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "docker-code[${AGENT_ID}]: jq is missing, so ${file} is not pre-seeded" >&2
+        return 0
+    fi
+    mkdir -p "$(dirname "${file}")" 2>/dev/null || true
+    tmp="${file}.docker-code.$$"
+    if { [ -s "${file}" ] && jq -e 'type == "object"' "${file}" >/dev/null 2>&1 && cat "${file}" || echo '{}'; } |
+        jq --arg pwd "${PWD}" "${AGENT_REMOTE_SEED_JQ}" >"${tmp}" 2>/dev/null &&
+        [ -s "${tmp}" ] &&
+        { [ ! -e "${file}" ] || chmod --reference="${file}" "${tmp}" 2>/dev/null || true; } &&
+        mv -f "${tmp}" "${file}"; then
+        return 0
+    fi
+    rm -f "${tmp}"
+    echo "docker-code[${AGENT_ID}]: could not pre-seed ${file}; the tool may ask its first-run questions" >&2
+}
+
 if [ "${DOCKER_CODE_REMOTE:-0}" = "1" ] && ! is_subcommand "${1:-}"; then
+    seed_remote_state
     # Some tools serve remote control from a daemon of their own that the interactive client then
     # joins, rather than from a flag on the client. Started before the exec, because after it there
     # is no shell left to start anything. A failure is the tool's to explain — typically a missing

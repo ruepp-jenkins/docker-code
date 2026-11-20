@@ -54,6 +54,8 @@ next with `\`.
 | `AGENT_REMOTE_START` | — | Subcommand of `AGENT_BIN` run before the agent when `DOCKER_CODE_REMOTE=1`, for tools whose remote control is a daemon; see [Remote control](../docs/REMOTE.md) |
 | `AGENT_REMOTE_RESUME_ARGS` | — | Flags added after `AGENT_REMOTE_ARGS` when `AGENT_REMOTE_RESUME_DIR` already holds a `*.jsonl`, so a restarted remote session rejoins its conversation instead of opening an empty one |
 | `AGENT_REMOTE_RESUME_DIR` | — | Where the tool keeps this directory's transcripts; `%h` is `$HOME`, `%p` the working directory with every non-alphanumeric character replaced by `-` |
+| `AGENT_REMOTE_SEED_FILE` | — | A state file (`%h` is `$HOME`) that a remote session pre-seeds before every start, so first-run dialogs do not block a session nobody is attached to |
+| `AGENT_REMOTE_SEED_JQ` | — | The `jq` program applied to that file (missing or invalid counts as `{}`); `$pwd` is the working directory |
 
 Setting either remote key also gives the agent a `<wrapper>-remote` command. Add its symlink with
 `ln -s docker-code bin/<wrapper>-remote`; the installer derives it on its own. Copy the `/remote`

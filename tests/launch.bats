@@ -293,3 +293,33 @@ EOF
     run bash "${LAUNCH}" -c
     [ "$(args_line)" = "-c" ]
 }
+
+@test "a remote session marks onboarding done and the workspace trusted, keeping what was there" {
+    use_agent claude
+    export DOCKER_CODE_REMOTE=1 HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}"
+    printf '{"userID":"u","projects":{"/x":{"allowedTools":["a"]}}}' >"${HOME}/.claude.json"
+    cd "${BATS_TEST_TMPDIR}"
+    run bash "${LAUNCH}"
+    [ "${status}" -eq 0 ]
+    run jq -r --arg p "${BATS_TEST_TMPDIR}" \
+        '[.hasCompletedOnboarding, .projects[$p].hasTrustDialogAccepted, .userID, .projects["/x"].allowedTools[0]] | join(",")' \
+        "${HOME}/.claude.json"
+    [ "${output}" = "true,true,u,a" ]
+}
+
+@test "a lost or empty state file is recreated for a remote session, and a plain session leaves it alone" {
+    use_agent claude
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}"
+    : >"${HOME}/.claude.json"
+    run bash "${LAUNCH}"
+    [ ! -s "${HOME}/.claude.json" ]
+
+    export DOCKER_CODE_REMOTE=1
+    run bash "${LAUNCH}"
+    [ "$(jq -r .hasCompletedOnboarding "${HOME}/.claude.json")" = "true" ]
+    rm "${HOME}/.claude.json"
+    run bash "${LAUNCH}"
+    [ "$(jq -r .hasCompletedOnboarding "${HOME}/.claude.json")" = "true" ]
+}

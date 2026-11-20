@@ -344,6 +344,10 @@ and never in front of a subcommand from `AGENT_YOLO_SKIP`:
   conversation: the flags are added only when the directory already holds a transcript, so the first
   start creates the session and every later one continues it. A resume flag the user typed
   (`-c`, `-r`, `--resume`, `--session-id`) wins.
+- `AGENT_REMOTE_SEED_FILE` and `AGENT_REMOTE_SEED_JQ` — a state file and a `jq` program applied to it
+  before every start (`$pwd` is the working directory). Claude Code uses it to mark onboarding done and
+  the workspace trusted, so a restart never stops at the theme or trust dialogs, even if
+  `~/.claude.json` was lost.
 - `AGENT_REMOTE_START` — a subcommand of `AGENT_BIN` run before the agent, for tools whose remote
   control is a daemon.
 
