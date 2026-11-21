@@ -53,6 +53,48 @@ Playwright config (`use.launchOptions.args`) only for runs that need them:
 there means software. AMD and Intel need Mesa in the image (the Playwright images have it); NVIDIA's
 libraries are injected by `--gpus`.
 
+## Do not kill the inner Docker daemon
+
+The inner Docker daemon is a process of this very container, and nothing restarts it: if it dies,
+every `docker` command fails with "Cannot connect to the Docker daemon" until the user restarts the
+whole container. You run as root in the same process namespace, so it is easy to kill by accident.
+
+- Never run `pkill`, `killall` or `kill` with a pattern or a wildcard (`pkill -f docker`, `killall node`,
+  `kill -9 -1`). Look up the PID of the one process you mean and kill only that.
+- Never touch `dockerd`, `containerd`, `containerd-shim` or `docker-init`, and never stop, restart or
+  reconfigure the daemon (`service docker …`, `systemctl …`, editing `daemon.json`, a second `dockerd`).
+- Do not start containers with `--pid=host`, `--network=host`, `--cgroupns=host` or `--privileged`
+  unless the task cannot be done otherwise. They share this container's processes, network rules and
+  cgroups, so a cleanup or an `iptables` flush inside one reaches the daemon too.
+- Clean up by name or label, not wholesale: `docker rm -f <name>`, not `docker rm -f $(docker ps -aq)`,
+  and no `docker system prune` or `docker volume prune` unless the user asked for it.
+- Limit what a test container may use (`--memory`, `--cpus`, `--pids-limit`) and remove it afterwards
+  (`--rm`), so a runaway one cannot exhaust this container's memory or process table.
+- If `docker` stops answering ("Cannot connect to the Docker daemon"), first check `pgrep -x dockerd`.
+  A dead daemon can be started again without restarting the container, and this is the only
+  way you may start one. Run it once, then wait up to 30 seconds for `docker info`:
+
+  ```bash
+  rm -f /var/run/docker.pid /var/run/docker.sock   # a killed dockerd leaves a zombie and a stale pid file
+  args=(--host=unix:///var/run/docker.sock --group docker)
+  [ -z "${DOCKER_CODE_SHM_SIZE:-}" ] || args+=(--default-shm-size "${DOCKER_CODE_SHM_SIZE}")
+  if [ -n "${DOCKER_CODE_MIRROR_URL:-}" ]; then
+      args+=(--registry-mirror "${DOCKER_CODE_MIRROR_URL}")
+      case "${DOCKER_CODE_MIRROR_URL}" in http://*) m="${DOCKER_CODE_MIRROR_URL#http://}"; args+=(--insecure-registry "${m%%/*}") ;; esac
+  fi
+  for h in ${DOCKER_CODE_INSECURE_REGISTRIES//,/ }; do args+=(--insecure-registry "$h"); done
+  if [ -n "${DOCKER_CODE_PROXY:-}" ]; then
+      export HTTP_PROXY="${DOCKER_CODE_PROXY}" HTTPS_PROXY="${DOCKER_CODE_PROXY}" NO_PROXY="localhost,127.0.0.1"
+  fi
+  setsid nohup dockerd "${args[@]}" >>"$HOME/.docker-code/dockerd.log" 2>&1 </dev/null &
+  ```
+
+  This applies to `DOCKER_CODE_DIND=privileged` (the default). With `rootless` the daemon is not
+  `dockerd` in this namespace, and with `0` there is none: do not start one, report it instead.
+  Tell the user that the daemon died and was restarted, and read the end of
+  `~/.docker-code/dockerd.log` for the reason. If it does not come back, stop and ask the user to
+  restart the container.
+
 ## When docker is unavailable
 
 ```bash

@@ -256,3 +256,10 @@ gpu_sh() {
         grep -q -- '--use-angle=gl-egl' "${file}" || { echo "${file} lacks the Chromium flags"; return 1; }
     done
 }
+
+@test "every agent's instructions warn against killing the inner Docker daemon" {
+    for file in $(grep -rl 'You are running inside a docker-code container' "${REPO_ROOT}/agents"); do
+        grep -q 'Do not kill the inner Docker daemon' "${file}" || { echo "${file} lacks the daemon warning"; return 1; }
+        grep -q 'rm -f /var/run/docker.pid' "${file}" || { echo "${file} lacks the restart recipe"; return 1; }
+    done
+}
