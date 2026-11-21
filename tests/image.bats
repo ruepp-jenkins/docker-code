@@ -263,3 +263,84 @@ gpu_sh() {
         grep -q 'rm -f /var/run/docker.pid' "${file}" || { echo "${file} lacks the restart recipe"; return 1; }
     done
 }
+
+# The managed-block part of the entrypoint, run against a scratch home and a scratch defaults tree.
+seed_with() {
+    entry="${REPO_ROOT}/image/entrypoint.sh"
+    export AGENT_HOME="${BATS_TEST_TMPDIR}/home" DEFAULTS_DIR="${BATS_TEST_TMPDIR}/defaults"
+    mkdir -p "${AGENT_HOME}" "${DEFAULTS_DIR}"
+    cat >"${BATS_TEST_TMPDIR}/seed.sh" <<EOS
+set -euo pipefail
+AGENT_USER=\$(id -un)
+log() { echo "log: \$*" >&2; }
+$(sed -n '/^ensure_owned_dir()/,/^}/p' "${entry}")
+$(sed -n "/^MANAGED_BEGIN=/,/^seed_defaults() {/p" "${entry}" | sed '$d')
+$(sed -n '/^seed_defaults()/,/^}/p' "${entry}")
+seed_defaults
+EOS
+}
+
+write_default() {
+    printf '%s\n' '---' 'inclusion: always' '---' '' \
+        '<!-- docker-code:begin — managed -->' '# You are running inside a docker-code container' "$1" \
+        '<!-- docker-code:end -->' >"${DEFAULTS_DIR}/AGENTS.md"
+}
+
+@test "a changed instruction block reaches a home that already has the file, and the user's notes survive" {
+    seed_with
+    write_default "version one"
+    bash "${BATS_TEST_TMPDIR}/seed.sh"
+    grep -q 'version one' "${AGENT_HOME}/AGENTS.md"
+
+    printf '\nmy own notes\n' >>"${AGENT_HOME}/AGENTS.md"
+    sed -i '1i top note' "${AGENT_HOME}/AGENTS.md"
+    write_default "version two"
+    bash "${BATS_TEST_TMPDIR}/seed.sh"
+    grep -q 'version two' "${AGENT_HOME}/AGENTS.md"
+    ! grep -q 'version one' "${AGENT_HOME}/AGENTS.md"
+    grep -q 'my own notes' "${AGENT_HOME}/AGENTS.md"
+    [ "$(head -n 1 "${AGENT_HOME}/AGENTS.md")" = "top note" ]
+    [ "$(grep -c 'docker-code:begin' "${AGENT_HOME}/AGENTS.md")" -eq 1 ]
+}
+
+@test "an unchanged block leaves the file alone" {
+    seed_with
+    write_default "same"
+    bash "${BATS_TEST_TMPDIR}/seed.sh"
+    touch -d @1577836800 "${AGENT_HOME}/AGENTS.md"
+    bash "${BATS_TEST_TMPDIR}/seed.sh"
+    [ "$(stat -c %Y "${AGENT_HOME}/AGENTS.md")" = "1577836800" ]
+}
+
+@test "the unmarked file of an earlier release is replaced, with a backup of the old one" {
+    seed_with
+    write_default "new text"
+    printf '# You are running inside a docker-code container\nold text\n' >"${AGENT_HOME}/AGENTS.md"
+    run bash "${BATS_TEST_TMPDIR}/seed.sh"
+    grep -q 'new text' "${AGENT_HOME}/AGENTS.md"
+    grep -q 'old text' "${AGENT_HOME}/AGENTS.md.before-managed"
+}
+
+@test "a file of the user's own gets the block appended and nothing else changed" {
+    seed_with
+    write_default "managed text"
+    printf 'only my notes\n' >"${AGENT_HOME}/AGENTS.md"
+    run bash "${BATS_TEST_TMPDIR}/seed.sh"
+    [ "$(head -n 1 "${AGENT_HOME}/AGENTS.md")" = "only my notes" ]
+    grep -q 'managed text' "${AGENT_HOME}/AGENTS.md"
+}
+
+@test "a default without markers is still never overwritten" {
+    seed_with
+    printf 'default\n' >"${DEFAULTS_DIR}/config.toml"
+    printf 'mine\n' >"${AGENT_HOME}/config.toml"
+    bash "${BATS_TEST_TMPDIR}/seed.sh"
+    [ "$(cat "${AGENT_HOME}/config.toml")" = "mine" ]
+}
+
+@test "every agent's instruction file carries one managed block, closed at the end" {
+    for file in $(grep -rl 'You are running inside a docker-code container' "${REPO_ROOT}/agents"); do
+        [ "$(grep -c '^<!-- docker-code:begin' "${file}")" -eq 1 ] || { echo "${file}: begin"; return 1; }
+        [ "$(tail -n 1 "${file}")" = "<!-- docker-code:end -->" ] || { echo "${file}: end"; return 1; }
+    done
+}

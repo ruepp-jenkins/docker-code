@@ -262,7 +262,57 @@ seed_home() {
 #
 # Copy semantics are per file, not per directory: a user who already has .config/opencode/ must
 # still receive a new default that lands beside their own files.
+#
+# A default that carries a docker-code:begin / docker-code:end block is the exception to "never
+# overwrite": the instructions every agent reads describe this container, and a copy made once
+# describes the container of the day it was first started — the GPU section never reached an existing
+# home. Only the text between the markers is rewritten, on every start; whatever the user wrote
+# around it stays.
 # ---------------------------------------------------------------------------------------------
+MANAGED_BEGIN='<!-- docker-code:begin'
+MANAGED_END='<!-- docker-code:end -->'
+
+# The block of a file, markers included.
+managed_block() {
+    awk -v b="${MANAGED_BEGIN}" -v e="${MANAGED_END}" '
+        index($0, b) == 1 { on = 1 }
+        on { print }
+        index($0, e) == 1 { on = 0 }
+    ' "$1"
+}
+
+# Brings the block in dest up to date with src. Returns without touching dest when it already is.
+seed_managed_file() {
+    local src="$1" dest="$2" block new
+    block="$(mktemp)"
+    new="$(mktemp)"
+    managed_block "${src}" >"${block}"
+
+    if grep -q "^${MANAGED_BEGIN}" "${dest}" && grep -qF "${MANAGED_END}" "${dest}"; then
+        awk -v b="${MANAGED_BEGIN}" -v e="${MANAGED_END}" -v blockfile="${block}" '
+            !done && index($0, b) == 1 {
+                while ((getline line < blockfile) > 0) print line
+                done = 1; skip = 1
+            }
+            skip { if (index($0, e) == 1) skip = 0; next }
+            { print }
+        ' "${dest}" >"${new}"
+    elif grep -qF 'You are running inside a docker-code container' "${dest}"; then
+        # The unmarked default of an earlier release: the whole file was ours. Kept as a backup in
+        # case it was edited, because the replacement cannot tell the user's lines from ours.
+        cp -a "${dest}" "${dest}.before-managed"
+        log "${dest} is replaced by the current instructions; the old file is ${dest}.before-managed"
+        cp "${src}" "${new}"
+    else
+        { cat "${dest}"; printf '\n'; cat "${block}"; } >"${new}"
+        log "docker-code instructions appended to ${dest}"
+    fi
+
+    # Written in place rather than moved over it, so owner, mode and a symlink in the way survive.
+    cmp -s "${new}" "${dest}" || cat "${new}" >"${dest}"
+    rm -f "${block}" "${new}"
+}
+
 seed_defaults() {
     [ -d "${DEFAULTS_DIR}" ] || return 0
 
@@ -270,7 +320,13 @@ seed_defaults() {
     while IFS= read -r src; do
         rel="${src#"${DEFAULTS_DIR}"/}"
         dest="${AGENT_HOME}/${rel}"
-        [ -e "${dest}" ] && continue
+        if [ -e "${dest}" ]; then
+            # A failed update must not end the entrypoint: the session is worth having with old text.
+            if grep -q "^${MANAGED_BEGIN}" "${src}"; then
+                seed_managed_file "${src}" "${dest}" || log "could not update the instructions in ${dest}"
+            fi
+            continue
+        fi
 
         ensure_owned_dir "$(dirname "${dest}")"
         cp -a "${src}" "${dest}"

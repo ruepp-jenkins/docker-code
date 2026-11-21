@@ -1,3 +1,4 @@
+<!-- docker-code:begin — managed by the image and rewritten on every start; write your own notes outside this block -->
 # You are running inside a docker-code container
 
 This is not the user's machine. What you can see:
@@ -101,3 +102,4 @@ cat ~/.docker-code/dockerd.log      # why the daemon did not start
 Report what you find and suggest the user restart with `DOCKER_CODE_DIND=privileged` (the default)
 or `DOCKER_CODE_DIND=0` if they do not need an inner Docker at all. Do not spend a long time on it —
 you are useful without Docker.
+<!-- docker-code:end -->

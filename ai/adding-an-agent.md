@@ -129,6 +129,13 @@ therefore receive newly introduced defaults without losing user configuration. S
 every start because Docker does not prepopulate a bind mount from image contents as it does an empty
 named volume.
 
+The one exception is the agent's instruction file (the text that starts with "You are running inside a
+docker-code container"). It is wrapped in `<!-- docker-code:begin … -->` and `<!-- docker-code:end -->`
+lines, and only that block is rewritten on every start, so a new release's text reaches homes that
+already have the file. Anything the user wrote outside the markers stays. Keep the markers when you
+copy an instruction file for a new agent (`tests/image.bats` checks them); a file with a front matter,
+like Kiro's, keeps it above the begin line.
+
 ## CI release trigger
 
 If the Dockerfile installs the tool from npm, add a `URLTriggerEntry` to `Jenkinsfile`; otherwise a
