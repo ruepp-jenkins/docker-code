@@ -13,9 +13,10 @@ ARG KIRO_CHANNEL=stable
 # Not `curl https://cli.kiro.dev/install | bash`. That installer targets $HOME/.local/bin, which in
 # this image is the bind-mount point the first real start replaces, and it stops to ask a question
 # when it finds an installation already there. The archive it downloads carries its own install.sh,
-# and that one installs into /usr/local/bin when Q_INSTALL_GLOBAL is set — the same system-wide
-# location every other agent uses here. Q_SKIP_SETUP keeps it from writing shell integrations into
-# root's home during the build.
+# and that one installs into /usr/local/bin with --global — the same system-wide location every
+# other agent uses here, and it edits no shell files. The flag has to be the flag: release 3.5.0 of the
+# CLI dropped the old Q_INSTALL_GLOBAL and Q_SKIP_SETUP variables, and without it the installer
+# refuses a root install into another user's HOME, which failed every Kiro build.
 #
 # The checksum comes from the channel manifest, which is the file the vendor installer verifies
 # against as well; skipping that step would leave an unverified download in an image that runs an
@@ -41,7 +42,7 @@ RUN set -eux; \
     curl -fsSL -o "${tmp}/${file}" "${base}/${file}"; \
     echo "${expected}  ${tmp}/${file}" | sha256sum -c -; \
     unzip -q "${tmp}/${file}" -d "${tmp}"; \
-    env Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 "${tmp}/kirocli/install.sh"; \
+    "${tmp}/kirocli/install.sh" --global; \
     rm -rf "${tmp}"
 
 COPY agents/kiro/agent.env /etc/docker-code/agent.env
